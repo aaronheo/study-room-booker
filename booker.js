@@ -559,8 +559,8 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log) {
 
         const name = roomLink.textContent?.trim();
         if (!name) continue;
-        // Only include study rooms
-        if (!name.toLowerCase().includes("room") && !name.toLowerCase().includes("study")) continue;
+        // Only include 2130 study rooms
+        if (!name.startsWith("2130")) continue;
 
         const href = roomLink.href;
         const ridMatch = href.match(/rid=(\d+)/);
