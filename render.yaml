@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: study-room-booker
+    runtime: docker
+    plan: free
+    envVars:
+      - key: DEPLOYED
+        value: "true"
+      - key: PORT
+        value: "3000"
