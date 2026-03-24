@@ -149,9 +149,9 @@ async function bookRoom(opts, onProgress) {
     }
 
     log(`On schedule page. URL: ${page.url()}`);
-    log("Waiting for schedule page to load...");
+    log("Waiting for schedule rooms to load...");
     try {
-      await page.waitForSelector("#reservations, .schedule, table, .reservations", {
+      await page.waitForSelector('a[href*="reservation.php"]', {
         timeout: 30000,
       });
     } catch {
@@ -911,7 +911,9 @@ async function checkAvailability(opts, onProgress) {
       await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
     }
 
-    await page.waitForSelector("#reservations, .schedule, table, .reservations", {
+    // Wait for actual room links to appear, not just any table
+    log("Waiting for schedule rooms to load...");
+    await page.waitForSelector('a[href*="reservation.php"]', {
       timeout: 30000,
     });
 
