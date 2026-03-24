@@ -4,6 +4,89 @@ const BASE_URL = "https://scheduling.tools.lib.utah.edu";
 const SCHEDULE_URL = (date) =>
   `${BASE_URL}/Web/schedule.php?sd=${date}`;
 
+// In-memory session cookie cache
+let cachedCookies = null;
+let cookieTimestamp = 0;
+const COOKIE_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+function getCachedCookies() {
+  if (cachedCookies && Date.now() - cookieTimestamp < COOKIE_MAX_AGE_MS) {
+    return cachedCookies;
+  }
+  cachedCookies = null;
+  return null;
+}
+
+function saveCookies(cookies) {
+  cachedCookies = cookies;
+  cookieTimestamp = Date.now();
+}
+
+function clearCookies() {
+  cachedCookies = null;
+  cookieTimestamp = 0;
+}
+
+function getLaunchOpts() {
+  const isServer = process.env.DEPLOYED === "true";
+  const opts = {
+    headless: isServer ? "new" : false,
+    defaultViewport: isServer ? { width: 1280, height: 900 } : null,
+    args: isServer
+      ? ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+      : ["--start-maximized"],
+  };
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    opts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  return opts;
+}
+
+// Navigate to a target URL, using cached cookies if available.
+// If redirected to login, performs CAS+Duo auth and caches the new cookies.
+// Returns { page, browser } with the page on the target URL.
+async function launchAndAuth(targetUrl, username, password, log) {
+  const browser = await puppeteer.launch(getLaunchOpts());
+  const page = await browser.newPage();
+  page.setDefaultTimeout(120000);
+
+  // Try cached cookies first
+  const cookies = getCachedCookies();
+  if (cookies) {
+    log("Using cached session cookies...");
+    await page.setCookie(...cookies);
+  }
+
+  await page.goto(targetUrl, { waitUntil: "networkidle2" });
+
+  const currentUrl = page.url();
+  const needsLogin =
+    currentUrl.includes("cas.utah.edu") ||
+    currentUrl.includes("login") ||
+    currentUrl.includes("go.utah.edu");
+
+  if (needsLogin) {
+    if (cookies) {
+      log("Cached session expired. Re-authenticating...");
+      clearCookies();
+    }
+    if (!username || !password) {
+      throw new Error("Login required but no credentials provided.");
+    }
+    log("Login page detected. Entering credentials...");
+    await handleCASLogin(page, username, password, log);
+
+    // Save cookies after successful auth
+    const newCookies = await page.cookies();
+    saveCookies(newCookies);
+    log("Session cookies cached for future requests.");
+  } else {
+    log("Authenticated via cached session.");
+  }
+
+  return { page, browser };
+}
+
 // Known study rooms at Marriott Library
 const KNOWN_ROOMS = [
   "2130A Study Room",
@@ -41,51 +124,15 @@ async function bookRoom(opts, onProgress) {
     if (onProgress) onProgress(msg);
   };
 
-  const isServer = process.env.DEPLOYED === "true";
-  const launchOpts = {
-    headless: isServer ? "new" : false,
-    defaultViewport: isServer ? { width: 1280, height: 900 } : null,
-    args: isServer
-      ? ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-      : ["--start-maximized"],
-  };
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    launchOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
-  const browser = await puppeteer.launch(launchOpts);
-
-  const page = await browser.newPage();
-  page.setDefaultTimeout(120000); // 2 min timeout for Duo wait
+  log(`Navigating to schedule for ${date}...`);
+  const { page, browser } = await launchAndAuth(
+    SCHEDULE_URL(date),
+    username,
+    password,
+    log
+  );
 
   try {
-    // If a session cookie is provided, set it before navigating
-    if (cookie) {
-      log("Setting session cookie...");
-      const cookies = parseCookieString(cookie, BASE_URL);
-      await page.setCookie(...cookies);
-      log("Cookie set. Navigating to schedule...");
-    }
-
-    log(`Navigating to schedule for ${date}...`);
-    await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
-
-    // Check if we hit a login page (CAS auth)
-    const currentUrl = page.url();
-    if (
-      currentUrl.includes("cas.utah.edu") ||
-      currentUrl.includes("login") ||
-      currentUrl.includes("go.utah.edu")
-    ) {
-      if (!username || !password) {
-        throw new Error(
-          "Login required but no username/password provided. Either provide credentials or a valid session cookie."
-        );
-      }
-
-      log("Login page detected. Entering credentials...");
-      await handleCASLogin(page, username, password, log);
-    }
-
     // After auth, we may land on dashboard instead of schedule - navigate there
     if (!page.url().includes("schedule.php")) {
       log(`Landed on ${page.url()} after auth. Navigating to schedule...`);
@@ -563,40 +610,16 @@ async function getReservations(opts, onProgress) {
     if (onProgress) onProgress(msg);
   };
 
-  const isServer = process.env.DEPLOYED === "true";
-  const launchOpts = {
-    headless: isServer ? "new" : false,
-    defaultViewport: isServer ? { width: 1280, height: 900 } : null,
-    args: isServer
-      ? ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-      : ["--start-maximized"],
-  };
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    launchOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
-  const browser = await puppeteer.launch(launchOpts);
-  const page = await browser.newPage();
-  page.setDefaultTimeout(120000);
+  const dashboardUrl = `${BASE_URL}/Web/dashboard.php`;
+  log("Navigating to dashboard...");
+  const { page, browser } = await launchAndAuth(
+    dashboardUrl,
+    username,
+    password,
+    log
+  );
 
   try {
-    const dashboardUrl = `${BASE_URL}/Web/dashboard.php`;
-    log("Navigating to dashboard...");
-    await page.goto(dashboardUrl, { waitUntil: "networkidle2" });
-
-    // Check if we need to log in
-    const currentUrl = page.url();
-    if (
-      currentUrl.includes("cas.utah.edu") ||
-      currentUrl.includes("login") ||
-      currentUrl.includes("go.utah.edu")
-    ) {
-      if (!username || !password) {
-        throw new Error("Login required but no credentials provided.");
-      }
-      log("Login required. Entering credentials...");
-      await handleCASLogin(page, username, password, log);
-    }
-
     // After auth, make sure we're on the dashboard
     if (!page.url().includes("dashboard.php")) {
       await page.goto(dashboardUrl, { waitUntil: "networkidle2" });
