@@ -163,6 +163,35 @@
     }
     .room-list li button:hover { background: #a30000; }
 
+    .page-section { display: none; }
+    .page-section.active { display: block; }
+
+    .reservations-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+      margin-top: 0.5rem;
+    }
+    .reservations-table th {
+      background: #cc0000;
+      color: #fff;
+      padding: 0.5rem;
+      text-align: left;
+      font-weight: 600;
+    }
+    .reservations-table td {
+      padding: 0.5rem;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    .reservations-table tr:hover {
+      background: #f8f9fa;
+    }
+    .no-reservations {
+      text-align: center;
+      color: #888;
+      padding: 2rem 0;
+    }
+
     .divider {
       border: none;
       border-top: 1px solid #e0e0e0;
@@ -175,7 +204,15 @@
     <h1>Study Room Booker</h1>
     <p class="subtitle">University of Utah - Marriott Library</p>
 
-    <p class="help-text">Credentials are configured via environment variables. After clicking Book, approve the Duo push on your phone.</p>
+    <!-- Page tabs -->
+    <div class="tabs">
+      <button class="tab active" data-page="book">Book a Room</button>
+      <button class="tab" data-page="reservations">My Reservations</button>
+    </div>
+
+    <!-- Book tab -->
+    <div class="page-section active" id="book-page">
+    <p class="help-text">After clicking Book, approve the Duo push on your phone.</p>
 
     <!-- Booking preferences -->
     <label for="date">Date</label>
@@ -227,9 +264,30 @@
       <h3 style="margin-bottom:0.5rem;">Available Rooms</h3>
       <ul class="room-list" id="roomList"></ul>
     </div>
+    </div>
+
+    <!-- Reservations tab -->
+    <div class="page-section" id="reservations-page">
+      <button class="primary" id="loadReservationsBtn">Load My Reservations</button>
+      <p class="help-text" style="margin-top:0.5rem;">This will log in and fetch your upcoming reservations. Approve the Duo push on your phone.</p>
+      <div id="reservationsStatus" style="display:none;">
+        <div class="status-log" id="reservationsLog"></div>
+      </div>
+      <div id="reservationsList" style="margin-top:1rem;"></div>
+    </div>
   </div>
 
   <script>
+    // Page tab switching
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.page-section').forEach(s => s.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.page + '-page').classList.add('active');
+      });
+    });
+
     const bookBtn = document.getElementById('bookBtn');
     const statusDiv = document.getElementById('status');
     const statusLog = document.getElementById('statusLog');
@@ -325,6 +383,55 @@
     }
 
     bookBtn.addEventListener('click', () => startBooking());
+
+    // Reservations tab
+    const loadReservationsBtn = document.getElementById('loadReservationsBtn');
+    const reservationsListDiv = document.getElementById('reservationsList');
+    const reservationsStatus = document.getElementById('reservationsStatus');
+    const reservationsLog = document.getElementById('reservationsLog');
+
+    loadReservationsBtn.addEventListener('click', async () => {
+      loadReservationsBtn.disabled = true;
+      reservationsListDiv.innerHTML = '';
+      reservationsStatus.style.display = 'block';
+      reservationsLog.innerHTML = '<div class="msg info">Loading reservations... Approve Duo push if prompted.</div>';
+
+      try {
+        const res = await fetch('/api/reservations');
+        const data = await res.json();
+
+        if (data.error) {
+          reservationsLog.innerHTML = `<div class="msg error">${data.error}</div>`;
+          loadReservationsBtn.disabled = false;
+          return;
+        }
+
+        reservationsStatus.style.display = false;
+
+        if (!data.reservations || data.reservations.length === 0) {
+          reservationsListDiv.innerHTML = '<p class="no-reservations">No upcoming reservations.</p>';
+        } else {
+          let html = `<table class="reservations-table">
+            <thead><tr><th>Title</th><th>Start</th><th>End</th><th>Room</th></tr></thead><tbody>`;
+          data.reservations.forEach(r => {
+            html += `<tr>
+              <td>${r.title}</td>
+              <td>${r.startDate}</td>
+              <td>${r.endDate}</td>
+              <td>${r.room}</td>
+            </tr>`;
+          });
+          html += '</tbody></table>';
+          reservationsListDiv.innerHTML = html;
+        }
+
+        reservationsLog.innerHTML = '<div class="msg success">Reservations loaded.</div>';
+      } catch (err) {
+        reservationsLog.innerHTML = `<div class="msg error">Failed: ${err.message}</div>`;
+      }
+
+      loadReservationsBtn.disabled = false;
+    });
   </script>
 </body>
 </html>

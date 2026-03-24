@@ -568,4 +568,87 @@ function parseCookieString(cookieStr, baseUrl) {
   });
 }
 
-module.exports = { bookRoom, KNOWN_ROOMS };
+async function getReservations(opts, onProgress) {
+  const { username, password } = opts;
+
+  const log = (msg) => {
+    console.log(`[reservations] ${msg}`);
+    if (onProgress) onProgress(msg);
+  };
+
+  const isServer = process.env.DEPLOYED === "true";
+  const launchOpts = {
+    headless: isServer ? "new" : false,
+    defaultViewport: isServer ? { width: 1280, height: 900 } : null,
+    args: isServer
+      ? ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+      : ["--start-maximized"],
+  };
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    launchOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  const browser = await puppeteer.launch(launchOpts);
+  const page = await browser.newPage();
+  page.setDefaultTimeout(120000);
+
+  try {
+    const dashboardUrl = `${BASE_URL}/Web/dashboard.php`;
+    log("Navigating to dashboard...");
+    await page.goto(dashboardUrl, { waitUntil: "networkidle2" });
+
+    // Check if we need to log in
+    const currentUrl = page.url();
+    if (
+      currentUrl.includes("cas.utah.edu") ||
+      currentUrl.includes("login") ||
+      currentUrl.includes("go.utah.edu")
+    ) {
+      if (!username || !password) {
+        throw new Error("Login required but no credentials provided.");
+      }
+      log("Login required. Entering credentials...");
+      await handleCASLogin(page, username, password, log);
+    }
+
+    // After auth, make sure we're on the dashboard
+    if (!page.url().includes("dashboard.php")) {
+      await page.goto(dashboardUrl, { waitUntil: "networkidle2" });
+    }
+
+    log("Dashboard loaded. Scraping reservations...");
+
+    // Scrape the "Upcoming Reservations" table
+    const reservations = await page.evaluate(() => {
+      const results = [];
+      // Find all table rows in the upcoming reservations section
+      const tables = document.querySelectorAll("table");
+      for (const table of tables) {
+        const rows = table.querySelectorAll("tr");
+        for (const row of rows) {
+          const cells = row.querySelectorAll("td");
+          if (cells.length >= 4) {
+            const title = cells[0]?.textContent?.trim();
+            const user = cells[1]?.textContent?.trim();
+            const startDate = cells[2]?.textContent?.trim();
+            const endDate = cells[3]?.textContent?.trim();
+            const room = cells[4]?.textContent?.trim() || "";
+            if (title && startDate) {
+              results.push({ title, user, startDate, endDate, room });
+            }
+          }
+        }
+      }
+      return results;
+    });
+
+    log(`Found ${reservations.length} reservation(s).`);
+    await browser.close();
+    return { success: true, reservations };
+  } catch (err) {
+    log(`Error: ${err.message}`);
+    await browser.close().catch(() => {});
+    throw err;
+  }
+}
+
+module.exports = { bookRoom, getReservations, KNOWN_ROOMS };

@@ -1,6 +1,6 @@
 const express = require("express");
 const path = require("path");
-const { bookRoom } = require("./booker");
+const { bookRoom, getReservations } = require("./booker");
 
 const app = express();
 app.use(express.json());
@@ -56,6 +56,22 @@ app.post("/api/book", async (req, res) => {
     sendStatus(jobId, { status: "done", ...result });
   } catch (err) {
     sendStatus(jobId, { status: "error", message: err.message });
+  }
+});
+
+app.get("/api/reservations", async (req, res) => {
+  const username = process.env.UID;
+  const password = process.env.PASSWORD;
+
+  if (!username || !password) {
+    return res.status(500).json({ error: "UID and PASSWORD environment variables are not set" });
+  }
+
+  try {
+    const result = await getReservations({ username, password });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
