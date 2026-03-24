@@ -161,7 +161,7 @@ async function bookRoom(opts, onProgress) {
     log("Schedule loaded. Looking for available rooms...");
 
     // Scrape available rooms and time slots
-    const availableRooms = await scrapeAvailableRooms(page, date, startTime, endTime);
+    const availableRooms = await scrapeAvailableRooms(page, date, startTime, endTime, log);
 
     if (availableRooms.length === 0) {
       log("No rooms available for the selected time slot.");
@@ -463,39 +463,151 @@ async function handleCASLogin(page, username, password, log) {
   }
 }
 
-async function scrapeAvailableRooms(page, date, startTime, endTime) {
-  // The schedule page has links like:
-  // <a href="/Web/reservation.php?rid=77&sid=1&rd=2026-03-29">1738D Study Room</a>
-  const rooms = await page.evaluate(() => {
-    const links = Array.from(
-      document.querySelectorAll('a[href*="reservation.php"]')
-    );
-    const seen = new Set();
-    const results = [];
+async function scrapeAvailableRooms(page, date, startTime, endTime, log) {
+  // The schedule page is a grid: header row has time labels, each room row
+  // has td cells with colspan indicating how many 10-min slots they span.
+  // Cell classes indicate status: "reservable", "reserved", "unreservable", etc.
+  const rooms = await page.evaluate(
+    (startTime, endTime) => {
+      const results = [];
 
-    for (const link of links) {
-      const name = link.textContent?.trim();
-      if (!name || seen.has(name)) continue;
-      // Skip non-room links (like nav links)
-      if (!name.toLowerCase().includes("room") && !name.toLowerCase().includes("study")) continue;
-      seen.add(name);
+      // Parse the header row to build a time-to-column mapping
+      // Each td in the header has a time label and a colspan
+      const tables = document.querySelectorAll("table");
+      let scheduleTable = null;
+      for (const table of tables) {
+        // The schedule table has the time header row
+        const headerCells = table.querySelectorAll("tr:first-child td, tr:first-child th");
+        for (const cell of headerCells) {
+          if (cell.textContent?.includes("AM") || cell.textContent?.includes("PM")) {
+            scheduleTable = table;
+            break;
+          }
+        }
+        if (scheduleTable) break;
+      }
 
-      const href = link.href;
-      const ridMatch = href.match(/rid=(\d+)/);
-      const rid = ridMatch ? ridMatch[1] : "";
+      if (!scheduleTable) return results;
 
-      results.push({
-        name,
-        resourceId: rid,
-        href,
-        available: true,
-      });
+      // Build column index mapping: figure out what column index each time starts at
+      // by walking header cells and tracking colspan
+      const headerRow = scheduleTable.querySelector("tr");
+      const headerCells = headerRow ? headerRow.querySelectorAll("td, th") : [];
+      const timeColumns = []; // array of { time: "HH:MM", colStart, colEnd }
+      let colIdx = 0;
+
+      for (const cell of headerCells) {
+        const colspan = parseInt(cell.getAttribute("colspan") || "1", 10);
+        const text = cell.textContent?.trim() || "";
+
+        // Parse time from header like "7:00 AM", "12:00 PM"
+        const timeMatch = text.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+        if (timeMatch) {
+          let hours = parseInt(timeMatch[1], 10);
+          const mins = parseInt(timeMatch[2], 10);
+          const ampm = timeMatch[3].toUpperCase();
+          if (ampm === "PM" && hours !== 12) hours += 12;
+          if (ampm === "AM" && hours === 12) hours = 0;
+          const time24 = `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+          timeColumns.push({ time: time24, colStart: colIdx, colEnd: colIdx + colspan });
+        }
+
+        colIdx += colspan;
+      }
+
+      if (timeColumns.length === 0) return results;
+
+      // Determine the total number of columns
+      const totalCols = colIdx;
+
+      // Figure out the column range for the requested start/end time
+      // Each column represents a 10-minute slot
+      // Find the first header time <= startTime and last header time >= endTime
+      function timeToMinutes(t) {
+        const [h, m] = t.split(":").map(Number);
+        return h * 60 + m;
+      }
+
+      const startMins = timeToMinutes(startTime);
+      const endMins = timeToMinutes(endTime);
+
+      // Calculate columns per minute based on header
+      // Assume 10-min slots (6 columns per hour)
+      const firstTime = timeColumns[0];
+      const firstMins = timeToMinutes(firstTime.time);
+      const slotsPerMin = 1 / 10; // 1 column = 10 minutes
+      const startCol = firstTime.colStart + Math.round((startMins - firstMins) * slotsPerMin);
+      const endCol = firstTime.colStart + Math.round((endMins - firstMins) * slotsPerMin);
+
+      // Now check each room row
+      const rows = scheduleTable.querySelectorAll("tr");
+      for (let r = 1; r < rows.length; r++) {
+        const row = rows[r];
+        const cells = row.querySelectorAll("td, th");
+
+        // First cell(s) are usually the room name and a "Library Closed" label
+        // Find the room link
+        const roomLink = row.querySelector('a[href*="reservation.php"]');
+        if (!roomLink) continue;
+
+        const name = roomLink.textContent?.trim();
+        if (!name) continue;
+        // Only include study rooms
+        if (!name.toLowerCase().includes("room") && !name.toLowerCase().includes("study")) continue;
+
+        const href = roomLink.href;
+        const ridMatch = href.match(/rid=(\d+)/);
+        const rid = ridMatch ? ridMatch[1] : "";
+
+        // Walk the cells tracking column position to check the requested range
+        let cellCol = 0;
+        let allReservable = true;
+        let hasOverlap = false;
+
+        for (const cell of cells) {
+          const colspan = parseInt(cell.getAttribute("colspan") || "1", 10);
+          const cellStart = cellCol;
+          const cellEnd = cellCol + colspan;
+
+          // Check if this cell overlaps with requested time range
+          if (cellEnd > startCol && cellStart < endCol) {
+            hasOverlap = true;
+            const cellClass = (cell.className || "").toLowerCase();
+            // "reservable" = open slot, anything else (reserved, unreservable, restricted, past) = not available
+            if (!cellClass.includes("reservable") || cellClass.includes("unreservable")) {
+              allReservable = false;
+              break;
+            }
+          }
+
+          cellCol += colspan;
+        }
+
+        results.push({
+          name,
+          resourceId: rid,
+          href,
+          available: hasOverlap && allReservable,
+        });
+      }
+
+      return results;
+    },
+    startTime,
+    endTime
+  );
+
+  const available = rooms.filter((r) => r.available);
+  const unavailable = rooms.filter((r) => !r.available);
+
+  if (log) {
+    log(`Found ${rooms.length} rooms total: ${available.length} available, ${unavailable.length} unavailable for ${startTime}-${endTime}`);
+    if (unavailable.length > 0) {
+      log(`Unavailable: ${unavailable.map((r) => r.name).join(", ")}`);
     }
+  }
 
-    return results;
-  });
-
-  return rooms;
+  return available;
 }
 
 async function clickAndBook(page, room, startTime, endTime, log) {
