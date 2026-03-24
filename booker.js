@@ -32,11 +32,18 @@ async function bookRoom(opts, onProgress) {
     if (onProgress) onProgress(msg);
   };
 
-  const browser = await puppeteer.launch({
-    headless: false, // visible so user can approve Duo
-    defaultViewport: null,
-    args: ["--start-maximized"],
-  });
+  const isServer = process.env.DEPLOYED === "true";
+  const launchOpts = {
+    headless: isServer ? "new" : false,
+    defaultViewport: isServer ? { width: 1280, height: 900 } : null,
+    args: isServer
+      ? ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+      : ["--start-maximized"],
+  };
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    launchOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  const browser = await puppeteer.launch(launchOpts);
 
   const page = await browser.newPage();
   page.setDefaultTimeout(120000); // 2 min timeout for Duo wait
