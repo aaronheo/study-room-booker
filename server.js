@@ -30,11 +30,11 @@ app.post("/api/book", async (req, res) => {
   const { date, startTime, endTime, room } = req.body;
 
   // Use environment variables for credentials
-  const username = process.env.UID;
+  const username = process.env.UTAH_UID;
   const password = process.env.PASSWORD;
 
   if (!username || !password) {
-    return res.status(500).json({ error: "UID and PASSWORD environment variables are not set" });
+    return res.status(500).json({ error: "UTAH_UID and PASSWORD environment variables are not set" });
   }
 
   const jobId = Date.now().toString(36);
@@ -60,11 +60,11 @@ app.post("/api/book", async (req, res) => {
 });
 
 app.get("/api/reservations", async (req, res) => {
-  const username = process.env.UID;
+  const username = process.env.UTAH_UID;
   const password = process.env.PASSWORD;
 
   if (!username || !password) {
-    return res.status(500).json({ error: "UID and PASSWORD environment variables are not set" });
+    return res.status(500).json({ error: "UTAH_UID and PASSWORD environment variables are not set" });
   }
 
   try {

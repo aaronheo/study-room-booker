@@ -331,7 +331,21 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        const { jobId } = await res.json();
+        if (!res.ok) {
+          const text = await res.text();
+          let msg;
+          try { msg = JSON.parse(text).error; } catch { msg = text; }
+          addLog(`Server error (${res.status}): ${msg}`, 'error');
+          bookBtn.disabled = false;
+          return;
+        }
+        const data = await res.json();
+        if (data.error) {
+          addLog('Error: ' + data.error, 'error');
+          bookBtn.disabled = false;
+          return;
+        }
+        const { jobId } = data;
 
         // Listen for SSE status updates
         const evtSource = new EventSource(`/api/status/${jobId}`);
@@ -362,6 +376,7 @@
         evtSource.onerror = () => {
           evtSource.close();
           bookBtn.disabled = false;
+          addLog('Connection to server lost.', 'error');
         };
       } catch (err) {
         addLog('Request failed: ' + err.message, 'error');
