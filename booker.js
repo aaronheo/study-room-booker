@@ -632,7 +632,7 @@ async function clickAndBook(page, room, startTime, endTime, log) {
   // Navigate directly to the reservation page for this room
   const reservationUrl = room.href;
   log(`Navigating to reservation page: ${reservationUrl}`);
-  await page.goto(reservationUrl, { waitUntil: "domcontentloaded" });
+  await page.goto(reservationUrl, { waitUntil: "networkidle2" });
 
   log(`Reservation page loaded. URL: ${page.url()}`);
 
@@ -850,7 +850,7 @@ async function getReservations(opts, onProgress) {
   try {
     // After auth, make sure we're on the dashboard
     if (!page.url().includes("dashboard.php")) {
-      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
+      await page.goto(dashboardUrl, { waitUntil: "networkidle2" });
     }
 
     log("Dashboard loaded. Scraping reservations...");
