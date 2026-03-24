@@ -4,16 +4,25 @@ const BASE_URL = "https://scheduling.tools.lib.utah.edu";
 const SCHEDULE_URL = (date) =>
   `${BASE_URL}/Web/schedule.php?sd=${date}`;
 
-// Known study rooms at Marriott Library - scraped from actual site
+// Known study rooms at Marriott Library
 const KNOWN_ROOMS = [
-  "1738D Study Room",
-  "1750A Study Room",
-  "1750B Study Room",
-  "1750C Study Room",
-  "1750D Study Room",
-  "2101 Dumke Study Room",
-  "2103 Study Room",
-  "2105 Study Room",
+  "2130A Study Room",
+  "2130B Study Room",
+  "2130C Study Room",
+  "2130D Study Room",
+  "2130E Study Room",
+  "2130F Study Room",
+  "2130G Study Room",
+  "2130H Study Room",
+  "2130J Study Room",
+  "2130K Study Room",
+  "2130L Study Room",
+  "2130M Study Room",
+  "2130P Study Room",
+  "2130Q Study Room",
+  "2130R Study Room",
+  "2130S Study Room",
+  "2130U Study Room",
 ];
 
 async function bookRoom(opts, onProgress) {
