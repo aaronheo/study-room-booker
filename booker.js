@@ -488,47 +488,28 @@ async function clickAndBook(page, room, startTime, endTime, log) {
   });
   log(`Form buttons: ${JSON.stringify(formButtons)}`);
 
-  // Try to set start time
-  const startInput = await page.$(
-    '#BeginTime, #startTime, input[id*="eginTime"], input[id*="tartTime"], input[name*="begin"], input[name*="start"]'
-  );
-  if (startInput) {
-    await startInput.click({ clickCount: 3 });
-    await startInput.type(startTime);
-    log(`Set start time to ${startTime}`);
-  } else {
-    log("Could not find start time input");
-  }
+  // Set start time via BeginPeriod select dropdown (value format: "HH:MM:00")
+  const startValue = `${startTime}:00`;
+  await page.select("#BeginPeriod", startValue);
+  log(`Set start time to ${startTime}`);
 
-  // Try to set end time
-  const endInput = await page.$(
-    '#EndTime, #endTime, input[id*="ndTime"], input[name*="end"]'
-  );
-  if (endInput) {
-    await endInput.click({ clickCount: 3 });
-    await endInput.type(endTime);
-    log(`Set end time to ${endTime}`);
-  } else {
-    log("Could not find end time input");
-  }
+  // Set end time via EndPeriod select dropdown
+  const endValue = `${endTime}:00`;
+  await page.select("#EndPeriod", endValue);
+  log(`Set end time to ${endTime}`);
 
-  // Click submit/book button
+  // Click the "Create" button (type="button", class="button save create")
   log("Submitting reservation...");
-  const submitBtn = await page.$(
-    'button.save, button[type="submit"], input[type="submit"], .btn-primary, #btnSubmit, button[name="save"]'
-  );
-  if (submitBtn) {
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => {}),
-      submitBtn.click(),
-    ]);
+  const createBtn = await page.$("button.save.create");
+  if (createBtn) {
+    await createBtn.evaluate((btn) => btn.click());
+    // Wait for the response (AJAX-based, not a page navigation)
+    await new Promise((r) => setTimeout(r, 5000));
   } else {
-    log("Could not find submit button!");
+    log("Could not find Create button!");
   }
 
-  // Wait and check for success
-  await new Promise((r) => setTimeout(r, 2000));
-
+  // Check for success or error messages on the page
   const result = await page.evaluate(() => {
     const body = document.body.innerText;
     const success =
@@ -538,12 +519,18 @@ async function clickAndBook(page, room, startTime, endTime, log) {
       body.includes("created") ||
       body.includes("Created");
     const errors = [];
-    const errorEls = document.querySelectorAll(".error, .alert-danger, .validation-error, .alert");
+    const errorEls = document.querySelectorAll(".error, .alert-danger, .validation-error, .alert, .reservationError, #reservation-error");
     errorEls.forEach((el) => {
       const text = el.textContent?.trim();
       if (text) errors.push(text);
     });
-    return { success, errors, bodySnippet: body.substring(0, 500) };
+    // Also check for inline validation errors
+    const validationEls = document.querySelectorAll(".inlineError, .inline-error, span.error");
+    validationEls.forEach((el) => {
+      const text = el.textContent?.trim();
+      if (text) errors.push(text);
+    });
+    return { success, errors, bodySnippet: body.substring(0, 500), url: window.location.href };
   });
 
   if (result.success) {
