@@ -211,21 +211,20 @@ async function handleCASLogin(page, username, password, log) {
     await page.type(passwordSelector, password, { delay: 50 });
     log("Password entered.");
 
-    // Click login/submit button
+    // Click login/submit button and wait for navigation to Duo
     const submitBtn = await page.$(
       'button[type="submit"], input[type="submit"], button[name="submit"], .btn-submit, #submit'
     );
-    if (submitBtn) {
-      await submitBtn.click();
-    } else {
-      await page.keyboard.press("Enter");
-    }
+
+    log("Submitting credentials...");
+    // Use Promise.all to click and wait for navigation simultaneously
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }).catch(() => {}),
+      submitBtn ? submitBtn.click() : page.keyboard.press("Enter"),
+    ]);
 
     log("Credentials submitted. Waiting for Duo authentication...");
     log(">>> Please approve the Duo push on your phone <<<");
-
-    // Wait a moment for the Duo page/iframe to appear
-    await new Promise((r) => setTimeout(r, 3000));
 
     let currentUrl = page.url();
     log(`After credentials, current URL: ${currentUrl}`);
@@ -255,12 +254,15 @@ async function handleCASLogin(page, username, password, log) {
     // Check for Duo Universal Prompt (redirect-based, not iframe)
     currentUrl = page.url();
     if (currentUrl.includes("duosecurity.com") || currentUrl.includes("duo.com")) {
-      log("Duo Universal Prompt detected. Trying to auto-send push...");
+      log("Duo Universal Prompt detected. Waiting for page to fully load...");
 
-      // Wait for the Duo prompt page to fully load
-      await page.waitForSelector("button, input[type='submit']", {
-        timeout: 10000,
-      }).catch(() => {});
+      // Wait for Duo page to be fully loaded and interactive
+      await page.waitForFunction(
+        () => document.readyState === "complete",
+        { timeout: 15000 }
+      ).catch(() => {});
+      // Extra wait for Duo's JS framework to render
+      await new Promise((r) => setTimeout(r, 3000));
 
       // Log all buttons on the page for debugging
       const buttons = await page.evaluate(() => {
