@@ -78,10 +78,24 @@ async function bookRoom(opts, onProgress) {
     }
 
     // Now we should be on the schedule page
+    log(`On schedule page. URL: ${page.url()}`);
     log("Waiting for schedule page to load...");
-    await page.waitForSelector("#reservations, .schedule, table, .reservations", {
-      timeout: 120000,
-    });
+    try {
+      await page.waitForSelector("#reservations, .schedule, table, .reservations", {
+        timeout: 30000,
+      });
+    } catch {
+      // Log page content to help debug what selectors are actually on the page
+      const pageTitle = await page.title();
+      const bodySnippet = await page.evaluate(() =>
+        document.body ? document.body.innerHTML.substring(0, 500) : "no body"
+      );
+      log(`Page title: ${pageTitle}`);
+      log(`Page HTML snippet: ${bodySnippet}`);
+      throw new Error(
+        "Schedule page did not load expected selectors. See logs above for page content."
+      );
+    }
 
     log("Schedule loaded. Looking for available rooms...");
 
@@ -186,29 +200,18 @@ async function handleCASLogin(page, username, password, log) {
     log("Credentials submitted. Waiting for Duo authentication...");
     log(">>> Please approve the Duo push on your phone <<<");
 
-    // Wait for Duo to complete - either we get redirected back to scheduling
-    // or we see the Duo iframe
-    await page.waitForFunction(
-      (baseUrl) => {
-        return (
-          window.location.href.includes(baseUrl) ||
-          document.querySelector('iframe[id="duo_iframe"]') ||
-          document.querySelector("#duo-frame") ||
-          document.querySelector(".duo-wrapper")
-        );
-      },
-      { timeout: 15000 },
-      BASE_URL
-    ).catch(() => {});
+    // Wait a moment for the Duo page/iframe to appear
+    await new Promise((r) => setTimeout(r, 3000));
 
-    // If Duo iframe is present, we need to wait for user to approve
+    let currentUrl = page.url();
+    log(`After credentials, current URL: ${currentUrl}`);
+
+    // Check for Duo iframe (legacy Duo)
     const duoFrame = await page.$(
       'iframe[id="duo_iframe"], #duo-frame, iframe[src*="duosecurity"]'
     );
     if (duoFrame) {
-      log("Duo authentication frame detected. Waiting for approval...");
-
-      // Try to auto-click "Send Me a Push" inside Duo iframe
+      log("Duo iframe detected. Trying to auto-click push...");
       try {
         const frame = await duoFrame.contentFrame();
         if (frame) {
@@ -225,22 +228,58 @@ async function handleCASLogin(page, username, password, log) {
       }
     }
 
+    // Check for Duo Universal Prompt (redirect-based, not iframe)
+    currentUrl = page.url();
+    if (currentUrl.includes("duosecurity.com") || currentUrl.includes("duo.com")) {
+      log("Duo Universal Prompt detected. Approve the push on your phone.");
+    }
+
     // Poll every 10 seconds for Duo approval (up to 2 minutes)
+    // After approval, we may land on: the scheduling site, CAS, or go.utah.edu
     log("Waiting for Duo approval (checking every 10s, up to 2 minutes)...");
     const maxAttempts = 12; // 12 × 10s = 120s
     let approved = false;
     for (let i = 1; i <= maxAttempts; i++) {
-      approved = await page.evaluate(
-        (baseUrl) => window.location.href.includes(baseUrl),
-        BASE_URL
-      );
-      if (approved) break;
-      log(`Still waiting for Duo approval... (${i * 10}s / 120s)`);
+      currentUrl = page.url();
+      // Check if we've left the Duo/CAS login pages
+      const onDuoOrLogin =
+        currentUrl.includes("duosecurity.com") ||
+        currentUrl.includes("duo.com") ||
+        currentUrl.includes("cas.utah.edu/cas/login");
+      const onSchedulingSite = currentUrl.includes(BASE_URL);
+
+      if (onSchedulingSite) {
+        approved = true;
+        break;
+      }
+
+      // If we're no longer on Duo/CAS login, we might be mid-redirect
+      if (!onDuoOrLogin && i > 1) {
+        log(`Redirecting... current URL: ${currentUrl}`);
+        // Give it a moment to finish redirecting
+        await new Promise((r) => setTimeout(r, 5000));
+        if (page.url().includes(BASE_URL)) {
+          approved = true;
+          break;
+        }
+      }
+
+      log(`Still waiting for Duo approval... (${i * 10}s / 120s) [URL: ${currentUrl}]`);
       await new Promise((r) => setTimeout(r, 10000));
     }
 
     if (!approved) {
-      throw new Error("Duo authentication timed out after 2 minutes");
+      // One last check - maybe we redirected during the last wait
+      if (page.url().includes(BASE_URL)) {
+        approved = true;
+      }
+    }
+
+    if (!approved) {
+      const finalUrl = page.url();
+      throw new Error(
+        `Duo authentication timed out after 2 minutes. Final URL: ${finalUrl}`
+      );
     }
 
     log("Authentication successful!");
