@@ -83,11 +83,17 @@ app.post("/api/availability", async (req, res) => {
     return res.status(500).json({ error: "UTAH_UID and PASSWORD environment variables are not set" });
   }
 
+  const jobId = Date.now().toString(36) + "a";
+  res.json({ jobId });
+
   try {
-    const result = await checkAvailability({ username, password, date, startTime, endTime });
-    res.json(result);
+    const result = await checkAvailability(
+      { username, password, date, startTime, endTime },
+      (msg) => sendStatus(jobId, { status: "progress", message: msg })
+    );
+    sendStatus(jobId, { status: "done", ...result });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendStatus(jobId, { status: "error", message: err.message });
   }
 });
 

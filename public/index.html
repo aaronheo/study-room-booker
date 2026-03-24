@@ -161,7 +161,8 @@
       font-size: 0.8rem;
       cursor: pointer;
     }
-    .room-list li button:hover { background: #a30000; }
+    .room-list li button:hover:not(:disabled) { background: #a30000; }
+    .room-list li button:disabled { background: #ccc; cursor: not-allowed; }
 
     .page-section { display: none; }
     .page-section.active { display: block; }
@@ -316,7 +317,7 @@
       checkBtn.textContent = 'Checking...';
       availableRoomsDiv.style.display = 'none';
       roomList.innerHTML = '';
-      statusDiv.style.display = 'none';
+      statusDiv.style.display = 'block';
       statusLog.innerHTML = '';
 
       const params = getBookingParams();
@@ -331,7 +332,6 @@
           const text = await res.text();
           let msg;
           try { msg = JSON.parse(text).error; } catch { msg = text; }
-          statusDiv.style.display = 'block';
           addLog(`Server error (${res.status}): ${msg}`, 'error');
           checkBtn.disabled = false;
           checkBtn.textContent = 'Check Availability';
@@ -339,21 +339,44 @@
         }
         const data = await res.json();
         if (data.error) {
-          statusDiv.style.display = 'block';
           addLog('Error: ' + data.error, 'error');
           checkBtn.disabled = false;
           checkBtn.textContent = 'Check Availability';
           return;
         }
+        const { jobId } = data;
 
-        if (!data.availableRooms || data.availableRooms.length === 0) {
-          statusDiv.style.display = 'block';
-          addLog('No rooms available for the selected time slot.', 'error');
-        } else {
-          showAvailableRooms(data.availableRooms);
-        }
+        addLog('Checking availability...', 'info');
+
+        const evtSource = new EventSource(`/api/status/${jobId}`);
+        evtSource.onmessage = (e) => {
+          const msg = JSON.parse(e.data);
+          if (msg.status === 'progress') {
+            addLog(msg.message, 'info');
+          } else if (msg.status === 'done') {
+            evtSource.close();
+            if (msg.availableRooms && msg.availableRooms.length > 0) {
+              addLog(`Found ${msg.availableRooms.length} available room(s).`, 'success');
+              showAvailableRooms(msg.availableRooms);
+            } else {
+              addLog('No rooms available for the selected time slot.', 'error');
+            }
+            checkBtn.disabled = false;
+            checkBtn.textContent = 'Check Availability';
+          } else if (msg.status === 'error') {
+            evtSource.close();
+            addLog('Error: ' + msg.message, 'error');
+            checkBtn.disabled = false;
+            checkBtn.textContent = 'Check Availability';
+          }
+        };
+        evtSource.onerror = () => {
+          evtSource.close();
+          addLog('Connection to server lost.', 'error');
+          checkBtn.disabled = false;
+          checkBtn.textContent = 'Check Availability';
+        };
       } catch (err) {
-        statusDiv.style.display = 'block';
         addLog('Request failed: ' + err.message, 'error');
       }
 
@@ -363,10 +386,10 @@
 
     // Step 2: Book a specific room
     async function bookRoom(roomName) {
+      availableRoomsDiv.style.display = 'none';
       statusDiv.style.display = 'block';
       statusLog.innerHTML = '';
-      // Disable all book buttons
-      document.querySelectorAll('.room-list button').forEach(b => b.disabled = true);
+      checkBtn.disabled = true;
 
       const params = { ...getBookingParams(), room: roomName };
       addLog(`Booking ${roomName}...`, 'info');
@@ -382,13 +405,15 @@
           let msg;
           try { msg = JSON.parse(text).error; } catch { msg = text; }
           addLog(`Server error (${res.status}): ${msg}`, 'error');
-          document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
+          availableRoomsDiv.style.display = 'block';
+          checkBtn.disabled = false;
           return;
         }
         const data = await res.json();
         if (data.error) {
           addLog('Error: ' + data.error, 'error');
-          document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
+          availableRoomsDiv.style.display = 'block';
+          checkBtn.disabled = false;
           return;
         }
         const { jobId } = data;
@@ -405,17 +430,20 @@
             } else {
               addLog(data.message, 'error');
             }
-            document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
+            availableRoomsDiv.style.display = 'block';
+            checkBtn.disabled = false;
           } else if (data.status === 'error') {
             evtSource.close();
             addLog('Error: ' + data.message, 'error');
-            document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
+            availableRoomsDiv.style.display = 'block';
+            checkBtn.disabled = false;
           }
         };
         evtSource.onerror = () => {
           evtSource.close();
           addLog('Connection to server lost.', 'error');
-          document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
+          availableRoomsDiv.style.display = 'block';
+          checkBtn.disabled = false;
         };
       } catch (err) {
         addLog('Request failed: ' + err.message, 'error');
