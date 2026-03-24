@@ -225,13 +225,23 @@ async function handleCASLogin(page, username, password, log) {
       }
     }
 
-    // Wait until we're redirected back to the scheduling site
-    log("Waiting for authentication to complete (up to 2 minutes)...");
-    await page.waitForFunction(
-      (baseUrl) => window.location.href.includes(baseUrl),
-      { timeout: 120000 },
-      BASE_URL
-    );
+    // Poll every 10 seconds for Duo approval (up to 2 minutes)
+    log("Waiting for Duo approval (checking every 10s, up to 2 minutes)...");
+    const maxAttempts = 12; // 12 × 10s = 120s
+    let approved = false;
+    for (let i = 1; i <= maxAttempts; i++) {
+      approved = await page.evaluate(
+        (baseUrl) => window.location.href.includes(baseUrl),
+        BASE_URL
+      );
+      if (approved) break;
+      log(`Still waiting for Duo approval... (${i * 10}s / 120s)`);
+      await new Promise((r) => setTimeout(r, 10000));
+    }
+
+    if (!approved) {
+      throw new Error("Duo authentication timed out after 2 minutes");
+    }
 
     log("Authentication successful!");
   } catch (err) {
