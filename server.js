@@ -1,6 +1,6 @@
 const express = require("express");
 const path = require("path");
-const { bookRoom, getReservations } = require("./booker");
+const { bookRoom, getReservations, checkAvailability } = require("./booker");
 
 const app = express();
 app.use(express.json());
@@ -26,8 +26,22 @@ function sendStatus(id, data) {
   }
 }
 
+function validateDuration(startTime, endTime) {
+  const [sh, sm] = startTime.split(":").map(Number);
+  const [eh, em] = endTime.split(":").map(Number);
+  const diffMins = (eh * 60 + em) - (sh * 60 + sm);
+  if (diffMins <= 0) return "End time must be after start time.";
+  if (diffMins > 180) return "Maximum booking duration is 3 hours.";
+  return null;
+}
+
 app.post("/api/book", async (req, res) => {
   const { date, startTime, endTime, room } = req.body;
+
+  const timeError = validateDuration(startTime, endTime);
+  if (timeError) {
+    return res.status(400).json({ error: timeError });
+  }
 
   // Use environment variables for credentials
   const username = process.env.UTAH_UID;
@@ -56,6 +70,24 @@ app.post("/api/book", async (req, res) => {
     sendStatus(jobId, { status: "done", ...result });
   } catch (err) {
     sendStatus(jobId, { status: "error", message: err.message });
+  }
+});
+
+app.post("/api/availability", async (req, res) => {
+  const { date, startTime, endTime } = req.body;
+
+  const username = process.env.UTAH_UID;
+  const password = process.env.PASSWORD;
+
+  if (!username || !password) {
+    return res.status(500).json({ error: "UTAH_UID and PASSWORD environment variables are not set" });
+  }
+
+  try {
+    const result = await checkAvailability({ username, password, date, startTime, endTime });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

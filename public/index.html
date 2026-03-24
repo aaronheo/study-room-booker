@@ -229,40 +229,16 @@
       </div>
     </div>
 
-    <label for="room">Preferred Room</label>
-    <select id="room">
-      <optgroup label="Standard Rooms">
-        <option value="2130A Study Room">2130A Study Room</option>
-        <option value="2130B Study Room">2130B Study Room</option>
-        <option value="2130C Study Room">2130C Study Room</option>
-        <option value="2130D Study Room">2130D Study Room</option>
-        <option value="2130E Study Room">2130E Study Room</option>
-        <option value="2130F Study Room">2130F Study Room</option>
-        <option value="2130G Study Room">2130G Study Room</option>
-        <option value="2130H Study Room">2130H Study Room</option>
-        <option value="2130J Study Room">2130J Study Room</option>
-        <option value="2130K Study Room">2130K Study Room</option>
-        <option value="2130L Study Room">2130L Study Room</option>
-        <option value="2130M Study Room">2130M Study Room</option>
-      </optgroup>
-      <optgroup label="Larger Rooms">
-        <option value="2130P Study Room">2130P Study Room</option>
-        <option value="2130Q Study Room">2130Q Study Room</option>
-        <option value="2130R Study Room">2130R Study Room</option>
-        <option value="2130S Study Room">2130S Study Room</option>
-        <option value="2130U Study Room">2130U Study Room</option>
-      </optgroup>
-    </select>
+    <button class="primary" id="checkBtn">Check Availability</button>
 
-    <button class="primary" id="bookBtn">Book Room</button>
-
-    <div id="status">
-      <div class="status-log" id="statusLog"></div>
+    <div id="availableRooms" style="display:none; margin-top:1rem;">
+      <h3 style="margin-bottom:0.5rem;">Available Rooms</h3>
+      <p class="help-text" style="margin-top:0;">Click a room to book it.</p>
+      <ul class="room-list" id="roomList"></ul>
     </div>
 
-    <div id="availableRooms">
-      <h3 style="margin-bottom:0.5rem;">Available Rooms</h3>
-      <ul class="room-list" id="roomList"></ul>
+    <div id="status" style="display:none; margin-top:1rem;">
+      <div class="status-log" id="statusLog"></div>
     </div>
     </div>
 
@@ -288,7 +264,7 @@
       });
     });
 
-    const bookBtn = document.getElementById('bookBtn');
+    const checkBtn = document.getElementById('checkBtn');
     const statusDiv = document.getElementById('status');
     const statusLog = document.getElementById('statusLog');
     const availableRoomsDiv = document.getElementById('availableRooms');
@@ -307,97 +283,185 @@
       return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
     }
 
-    async function startBooking(overrideRoom) {
-      statusDiv.style.display = 'block';
-      availableRoomsDiv.style.display = 'none';
-      roomList.innerHTML = '';
-      statusLog.innerHTML = '';
-      bookBtn.disabled = true;
-
-      const body = {
+    function getBookingParams() {
+      return {
         date: formatDate(document.getElementById('date').value),
         startTime: document.getElementById('startTime').value,
         endTime: document.getElementById('endTime').value,
-        room: overrideRoom || document.getElementById('room').value,
       };
+    }
 
-      // Credentials come from server-side env vars
+    function validateTimes() {
+      const start = document.getElementById('startTime').value;
+      const end = document.getElementById('endTime').value;
+      if (!start || !end) return 'Please select start and end times.';
+      const [sh, sm] = start.split(':').map(Number);
+      const [eh, em] = end.split(':').map(Number);
+      const diffMins = (eh * 60 + em) - (sh * 60 + sm);
+      if (diffMins <= 0) return 'End time must be after start time.';
+      if (diffMins > 180) return 'Maximum booking duration is 3 hours.';
+      return null;
+    }
 
-      addLog('Starting booking process...', 'info');
+    // Step 1: Check availability
+    async function checkAvailability() {
+      const timeError = validateTimes();
+      if (timeError) {
+        statusDiv.style.display = 'block';
+        statusLog.innerHTML = '';
+        addLog(timeError, 'error');
+        return;
+      }
+      checkBtn.disabled = true;
+      checkBtn.textContent = 'Checking...';
+      availableRoomsDiv.style.display = 'none';
+      roomList.innerHTML = '';
+      statusDiv.style.display = 'none';
+      statusLog.innerHTML = '';
+
+      const params = getBookingParams();
+
+      try {
+        const res = await fetch('/api/availability', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params),
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          let msg;
+          try { msg = JSON.parse(text).error; } catch { msg = text; }
+          statusDiv.style.display = 'block';
+          addLog(`Server error (${res.status}): ${msg}`, 'error');
+          checkBtn.disabled = false;
+          checkBtn.textContent = 'Check Availability';
+          return;
+        }
+        const data = await res.json();
+        if (data.error) {
+          statusDiv.style.display = 'block';
+          addLog('Error: ' + data.error, 'error');
+          checkBtn.disabled = false;
+          checkBtn.textContent = 'Check Availability';
+          return;
+        }
+
+        if (!data.availableRooms || data.availableRooms.length === 0) {
+          statusDiv.style.display = 'block';
+          addLog('No rooms available for the selected time slot.', 'error');
+        } else {
+          showAvailableRooms(data.availableRooms);
+        }
+      } catch (err) {
+        statusDiv.style.display = 'block';
+        addLog('Request failed: ' + err.message, 'error');
+      }
+
+      checkBtn.disabled = false;
+      checkBtn.textContent = 'Check Availability';
+    }
+
+    // Step 2: Book a specific room
+    async function bookRoom(roomName) {
+      statusDiv.style.display = 'block';
+      statusLog.innerHTML = '';
+      // Disable all book buttons
+      document.querySelectorAll('.room-list button').forEach(b => b.disabled = true);
+
+      const params = { ...getBookingParams(), room: roomName };
+      addLog(`Booking ${roomName}...`, 'info');
 
       try {
         const res = await fetch('/api/book', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify(params),
         });
         if (!res.ok) {
           const text = await res.text();
           let msg;
           try { msg = JSON.parse(text).error; } catch { msg = text; }
           addLog(`Server error (${res.status}): ${msg}`, 'error');
-          bookBtn.disabled = false;
+          document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
           return;
         }
         const data = await res.json();
         if (data.error) {
           addLog('Error: ' + data.error, 'error');
-          bookBtn.disabled = false;
+          document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
           return;
         }
         const { jobId } = data;
 
-        // Listen for SSE status updates
         const evtSource = new EventSource(`/api/status/${jobId}`);
         evtSource.onmessage = (e) => {
           const data = JSON.parse(e.data);
-
           if (data.status === 'progress') {
             addLog(data.message, 'info');
           } else if (data.status === 'done') {
             evtSource.close();
-            bookBtn.disabled = false;
-
             if (data.success) {
               addLog(data.message, 'success');
             } else {
               addLog(data.message, 'error');
-              if (data.availableRooms && data.availableRooms.length > 0) {
-                showAvailableRooms(data.availableRooms);
-              }
             }
+            document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
           } else if (data.status === 'error') {
             evtSource.close();
-            bookBtn.disabled = false;
             addLog('Error: ' + data.message, 'error');
+            document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
           }
         };
-
         evtSource.onerror = () => {
           evtSource.close();
-          bookBtn.disabled = false;
           addLog('Connection to server lost.', 'error');
+          document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
         };
       } catch (err) {
         addLog('Request failed: ' + err.message, 'error');
-        bookBtn.disabled = false;
+        document.querySelectorAll('.room-list button').forEach(b => b.disabled = false);
       }
     }
 
     function showAvailableRooms(rooms) {
       availableRoomsDiv.style.display = 'block';
       roomList.innerHTML = '';
-      rooms.forEach(name => {
-        const li = document.createElement('li');
-        li.innerHTML = `
-          <span>${name}</span>
-          <button onclick="startBooking('${name.replace(/'/g, "\\'")}')">Book This</button>
-        `;
-        roomList.appendChild(li);
-      });
+
+      // Separate standard vs larger rooms
+      const standard = rooms.filter(r => !['P','Q','R','S','U'].includes(r.name.replace(' Study Room','').slice(-1)));
+      const larger = rooms.filter(r => ['P','Q','R','S','U'].includes(r.name.replace(' Study Room','').slice(-1)));
+
+      function addRoomItems(list, label) {
+        if (list.length === 0) return;
+        const header = document.createElement('li');
+        header.style.cssText = 'font-weight:600; font-size:0.8rem; color:#666; border:none; padding:0.3rem 0;';
+        header.textContent = label;
+        roomList.appendChild(header);
+        list.forEach(r => {
+          const li = document.createElement('li');
+          li.innerHTML = `
+            <span>${r.name}</span>
+            <button onclick="bookRoom('${r.name.replace(/'/g, "\\'")}')">Book</button>
+          `;
+          roomList.appendChild(li);
+        });
+      }
+
+      addRoomItems(standard, 'Standard Rooms');
+      addRoomItems(larger, 'Larger Rooms');
     }
 
-    bookBtn.addEventListener('click', () => startBooking());
+    checkBtn.addEventListener('click', checkAvailability);
+
+    // Reset availability when date/time changes
+    ['date', 'startTime', 'endTime'].forEach(id => {
+      document.getElementById(id).addEventListener('change', () => {
+        availableRoomsDiv.style.display = 'none';
+        roomList.innerHTML = '';
+        statusDiv.style.display = 'none';
+        statusLog.innerHTML = '';
+      });
+    });
 
     // Reservations tab
     const loadReservationsBtn = document.getElementById('loadReservationsBtn');

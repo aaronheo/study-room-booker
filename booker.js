@@ -180,13 +180,20 @@ async function bookRoom(opts, onProgress) {
 
     if (preferredRoom) {
       log(`Preferred room "${room}" is available! Booking...`);
-      await clickAndBook(page, preferredRoom, startTime, endTime, log);
+      const booked = await clickAndBook(page, preferredRoom, startTime, endTime, log);
       await browser.close();
-      return {
-        success: true,
-        message: `Successfully booked ${room} from ${startTime} to ${endTime} on ${date}`,
-        bookedRoom: room,
-      };
+      if (booked) {
+        return {
+          success: true,
+          message: `Successfully booked ${preferredRoom.name} from ${startTime} to ${endTime} on ${date}`,
+          bookedRoom: preferredRoom.name,
+        };
+      } else {
+        return {
+          success: false,
+          message: `Failed to book ${preferredRoom.name}. See errors above.`,
+        };
+      }
     }
 
     // Preferred room not available, return alternatives
@@ -647,6 +654,50 @@ async function clickAndBook(page, room, startTime, endTime, log) {
   });
   log(`Form buttons: ${JSON.stringify(formButtons)}`);
 
+  // Set the reservation title - try multiple selectors
+  const titleSet = await page.evaluate(() => {
+    // Try by ID first
+    const byId = document.getElementById("reservationTitle");
+    if (byId) {
+      byId.value = "Study";
+      byId.dispatchEvent(new Event("change", { bubbles: true }));
+      byId.dispatchEvent(new Event("input", { bubbles: true }));
+      return "by id: reservationTitle";
+    }
+    // Try by name
+    const byName = document.querySelector('input[name="reservationTitle"], textarea[name="reservationTitle"]');
+    if (byName) {
+      byName.value = "Study";
+      byName.dispatchEvent(new Event("change", { bubbles: true }));
+      byName.dispatchEvent(new Event("input", { bubbles: true }));
+      return "by name: reservationTitle";
+    }
+    // Try finding by label text
+    const labels = document.querySelectorAll("label");
+    for (const label of labels) {
+      const text = (label.textContent || "").toLowerCase();
+      if (text.includes("title")) {
+        const inputId = label.getAttribute("for");
+        let input = inputId ? document.getElementById(inputId) : null;
+        if (!input) input = label.parentElement?.querySelector("input, textarea");
+        if (!input) input = label.nextElementSibling;
+        if (input && (input.tagName === "INPUT" || input.tagName === "TEXTAREA")) {
+          input.value = "Study";
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          return `by label: ${label.textContent.trim()} -> ${input.tagName}#${input.id}`;
+        }
+      }
+    }
+    // List all inputs with title-related attributes for debugging
+    const allInputs = Array.from(document.querySelectorAll("input, textarea"));
+    const titleRelated = allInputs.filter(el =>
+      (el.name + el.id + el.placeholder).toLowerCase().includes("title")
+    ).map(el => `${el.tagName}#${el.id}[name=${el.name}]`);
+    return `not found. Title-related inputs: ${titleRelated.join(", ") || "none"}`;
+  });
+  log(`Reservation title: ${titleSet}`);
+
   // Set start time via BeginPeriod select dropdown (value format: "HH:MM:00")
   const startValue = `${startTime}:00`;
   await page.select("#BeginPeriod", startValue);
@@ -720,36 +771,40 @@ async function clickAndBook(page, room, startTime, endTime, log) {
     log("Could not find Create button!");
   }
 
-  // Check for success or error messages on the page
+  // Check for error messages first (errors take priority over false success matches)
   const result = await page.evaluate(() => {
-    const body = document.body.innerText;
-    const success =
-      body.includes("successfully") ||
-      body.includes("confirmed") ||
-      body.includes("booked") ||
-      body.includes("created") ||
-      body.includes("Created");
     const errors = [];
     const errorEls = document.querySelectorAll(".error, .alert-danger, .validation-error, .alert, .reservationError, #reservation-error");
     errorEls.forEach((el) => {
       const text = el.textContent?.trim();
       if (text) errors.push(text);
     });
-    // Also check for inline validation errors
     const validationEls = document.querySelectorAll(".inlineError, .inline-error, span.error");
     validationEls.forEach((el) => {
       const text = el.textContent?.trim();
       if (text) errors.push(text);
     });
-    return { success, errors, bodySnippet: body.substring(0, 500), url: window.location.href };
+
+    // Only check success if there are no errors
+    const body = document.body.innerText;
+    const hasSuccess = errors.length === 0 && (
+      body.includes("successfully") ||
+      body.includes("confirmed") ||
+      body.includes("booked")
+    );
+
+    return { success: hasSuccess, errors, bodySnippet: body.substring(0, 500) };
   });
 
-  if (result.success) {
-    log("Reservation confirmed!");
-  } else if (result.errors.length > 0) {
+  if (result.errors.length > 0) {
     log(`Reservation errors: ${result.errors.join("; ")}`);
+    return false;
+  } else if (result.success) {
+    log("Reservation confirmed!");
+    return true;
   } else {
     log(`Reservation result unclear. Page content: ${result.bodySnippet}`);
+    return false;
   }
 }
 
@@ -825,4 +880,47 @@ async function getReservations(opts, onProgress) {
   }
 }
 
-module.exports = { bookRoom, getReservations, KNOWN_ROOMS };
+async function checkAvailability(opts, onProgress) {
+  const { username, password, date, startTime, endTime } = opts;
+
+  const log = (msg) => {
+    console.log(`[availability] ${msg}`);
+    if (onProgress) onProgress(msg);
+  };
+
+  log(`Checking availability for ${date} ${startTime}-${endTime}...`);
+  const { page, browser } = await launchAndAuth(
+    SCHEDULE_URL(date),
+    username,
+    password,
+    log
+  );
+
+  try {
+    if (!page.url().includes("schedule.php")) {
+      log(`Navigating to schedule...`);
+      await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
+    }
+
+    await page.waitForSelector("#reservations, .schedule, table, .reservations", {
+      timeout: 30000,
+    });
+
+    const availableRooms = await scrapeAvailableRooms(page, date, startTime, endTime, log);
+    await browser.close();
+
+    return {
+      success: true,
+      availableRooms: availableRooms.map((r) => ({
+        name: r.name,
+        resourceId: r.resourceId,
+      })),
+    };
+  } catch (err) {
+    log(`Error: ${err.message}`);
+    await browser.close().catch(() => {});
+    throw err;
+  }
+}
+
+module.exports = { bookRoom, getReservations, checkAvailability, KNOWN_ROOMS };
