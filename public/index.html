@@ -217,7 +217,7 @@
 
     <!-- Booking preferences -->
     <label for="date">Date</label>
-    <input type="date" id="date" value="2026-03-29">
+    <input type="date" id="date">
 
     <div class="row">
       <div>
@@ -255,6 +255,19 @@
   </div>
 
   <script>
+    // Default the date to the next upcoming Friday
+    (function setDefaultDate() {
+      const today = new Date();
+      const day = today.getDay();
+      const daysUntilFri = (5 - day + 7) % 7 || 7;
+      const fri = new Date(today);
+      fri.setDate(today.getDate() + daysUntilFri);
+      const yyyy = fri.getFullYear();
+      const mm = String(fri.getMonth() + 1).padStart(2, '0');
+      const dd = String(fri.getDate()).padStart(2, '0');
+      document.getElementById('date').value = `${yyyy}-${mm}-${dd}`;
+    })();
+
     // Page tab switching
     document.querySelectorAll('.tab').forEach(tab => {
       tab.addEventListener('click', () => {
@@ -475,8 +488,8 @@
         });
       }
 
-      addRoomItems(standard, 'Standard Rooms');
       addRoomItems(larger, 'Larger Rooms');
+      addRoomItems(standard, 'Standard Rooms');
     }
 
     checkBtn.addEventListener('click', checkAvailability);

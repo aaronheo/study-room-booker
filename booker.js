@@ -4,6 +4,15 @@ const BASE_URL = "https://scheduling.tools.lib.utah.edu";
 const SCHEDULE_URL = (date) =>
   `${BASE_URL}/Web/schedule.php?sd=${date}`;
 
+function getNextFriday() {
+  const today = new Date();
+  const day = today.getDay(); // 0=Sun, 5=Fri
+  const daysUntilFri = (5 - day + 7) % 7 || 7;
+  const fri = new Date(today);
+  fri.setDate(today.getDate() + daysUntilFri);
+  return `${fri.getFullYear()}-${fri.getMonth() + 1}-${fri.getDate()}`;
+}
+
 // In-memory session cookie cache
 let cachedCookies = null;
 let cookieTimestamp = 0;
@@ -57,7 +66,7 @@ async function launchAndAuth(targetUrl, username, password, log) {
     await page.setCookie(...cookies);
   }
 
-  await page.goto(targetUrl, { waitUntil: "networkidle2" });
+  await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
 
   const currentUrl = page.url();
   const needsLogin =
@@ -113,7 +122,7 @@ async function bookRoom(opts, onProgress) {
     username,
     password,
     cookie,
-    date = "2026-3-29",
+    date = getNextFriday(),
     startTime = "11:00",
     endTime = "14:00",
     room = "2130S Study room",
@@ -136,7 +145,7 @@ async function bookRoom(opts, onProgress) {
     // After auth, we may land on dashboard instead of schedule - navigate there
     if (!page.url().includes("schedule.php")) {
       log(`Landed on ${page.url()} after auth. Navigating to schedule...`);
-      await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
+      await page.goto(SCHEDULE_URL(date), { waitUntil: "domcontentloaded" });
     }
 
     log(`On schedule page. URL: ${page.url()}`);
@@ -623,7 +632,7 @@ async function clickAndBook(page, room, startTime, endTime, log) {
   // Navigate directly to the reservation page for this room
   const reservationUrl = room.href;
   log(`Navigating to reservation page: ${reservationUrl}`);
-  await page.goto(reservationUrl, { waitUntil: "networkidle2" });
+  await page.goto(reservationUrl, { waitUntil: "domcontentloaded" });
 
   log(`Reservation page loaded. URL: ${page.url()}`);
 
@@ -841,7 +850,7 @@ async function getReservations(opts, onProgress) {
   try {
     // After auth, make sure we're on the dashboard
     if (!page.url().includes("dashboard.php")) {
-      await page.goto(dashboardUrl, { waitUntil: "networkidle2" });
+      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     }
 
     log("Dashboard loaded. Scraping reservations...");
@@ -899,7 +908,7 @@ async function checkAvailability(opts, onProgress) {
   try {
     if (!page.url().includes("schedule.php")) {
       log(`Navigating to schedule...`);
-      await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
+      await page.goto(SCHEDULE_URL(date), { waitUntil: "domcontentloaded" });
     }
 
     await page.waitForSelector("#reservations, .schedule, table, .reservations", {
