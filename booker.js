@@ -66,7 +66,7 @@ async function launchAndAuth(targetUrl, username, password, log) {
     await page.setCookie(...cookies);
   }
 
-  await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+  await page.goto(targetUrl, { waitUntil: "networkidle2" });
 
   const currentUrl = page.url();
   const needsLogin =
@@ -145,7 +145,7 @@ async function bookRoom(opts, onProgress) {
     // After auth, we may land on dashboard instead of schedule - navigate there
     if (!page.url().includes("schedule.php")) {
       log(`Landed on ${page.url()} after auth. Navigating to schedule...`);
-      await page.goto(SCHEDULE_URL(date), { waitUntil: "domcontentloaded" });
+      await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
     }
 
     log(`On schedule page. URL: ${page.url()}`);
@@ -908,7 +908,7 @@ async function checkAvailability(opts, onProgress) {
   try {
     if (!page.url().includes("schedule.php")) {
       log(`Navigating to schedule...`);
-      await page.goto(SCHEDULE_URL(date), { waitUntil: "domcontentloaded" });
+      await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
     }
 
     await page.waitForSelector("#reservations, .schedule, table, .reservations", {
