@@ -231,7 +231,57 @@ async function handleCASLogin(page, username, password, log) {
     // Check for Duo Universal Prompt (redirect-based, not iframe)
     currentUrl = page.url();
     if (currentUrl.includes("duosecurity.com") || currentUrl.includes("duo.com")) {
-      log("Duo Universal Prompt detected. Approve the push on your phone.");
+      log("Duo Universal Prompt detected. Trying to auto-send push...");
+
+      // Wait for the Duo prompt page to fully load
+      await page.waitForSelector("button, input[type='submit']", {
+        timeout: 10000,
+      }).catch(() => {});
+
+      // Log all buttons on the page for debugging
+      const buttons = await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll("button, input[type='submit'], [role='button']"));
+        return btns.map((b) => ({
+          text: b.textContent?.trim(),
+          type: b.type,
+          className: b.className,
+          id: b.id,
+          ariaLabel: b.getAttribute("aria-label"),
+        }));
+      });
+      log(`Duo page buttons: ${JSON.stringify(buttons)}`);
+
+      // Try clicking "Send Me a Push" or similar button
+      const clicked = await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll("button, input[type='submit'], [role='button']"));
+        for (const btn of btns) {
+          const text = (btn.textContent || "").toLowerCase();
+          if (
+            text.includes("send me a push") ||
+            text.includes("send push") ||
+            text.includes("duo push") ||
+            text.includes("push")
+          ) {
+            btn.click();
+            return btn.textContent.trim();
+          }
+        }
+        // If no push button, try the first primary/submit button
+        const primary = document.querySelector(
+          "button.btn-primary, button[type='submit'], .primary-btn"
+        );
+        if (primary) {
+          primary.click();
+          return primary.textContent?.trim() || "primary button";
+        }
+        return null;
+      });
+
+      if (clicked) {
+        log(`Auto-clicked Duo button: "${clicked}". Approve on your phone.`);
+      } else {
+        log("Could not find a push button on Duo page. Please approve manually.");
+      }
     }
 
     // Poll every 10 seconds for Duo approval (up to 2 minutes)
