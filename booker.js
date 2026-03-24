@@ -77,7 +77,12 @@ async function bookRoom(opts, onProgress) {
       await handleCASLogin(page, username, password, log);
     }
 
-    // Now we should be on the schedule page
+    // After auth, we may land on dashboard instead of schedule - navigate there
+    if (!page.url().includes("schedule.php")) {
+      log(`Landed on ${page.url()} after auth. Navigating to schedule...`);
+      await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
+    }
+
     log(`On schedule page. URL: ${page.url()}`);
     log("Waiting for schedule page to load...");
     try {
@@ -98,6 +103,25 @@ async function bookRoom(opts, onProgress) {
     }
 
     log("Schedule loaded. Looking for available rooms...");
+
+    // Log page structure to help debug scraping
+    const pageDebug = await page.evaluate(() => {
+      const ids = Array.from(document.querySelectorAll("[id]"))
+        .slice(0, 20)
+        .map((el) => `${el.tagName}#${el.id}`);
+      const classes = Array.from(document.querySelectorAll("[class]"))
+        .slice(0, 30)
+        .map((el) => `${el.tagName}.${el.className.split(" ").join(".")}`);
+      const links = Array.from(document.querySelectorAll("a[href*='reservation'], a[href*='schedule']"))
+        .slice(0, 10)
+        .map((a) => ({ text: a.textContent?.trim(), href: a.href }));
+      const tables = document.querySelectorAll("table").length;
+      const tds = Array.from(document.querySelectorAll("td[data-resourceid], td[class*='reserv'], td[class*='slot']"))
+        .slice(0, 5)
+        .map((td) => ({ class: td.className, attrs: Array.from(td.attributes).map((a) => `${a.name}=${a.value}`) }));
+      return { ids, classes, links, tables, tds, bodyLength: document.body?.innerHTML.length };
+    });
+    log(`Page structure: ${JSON.stringify(pageDebug)}`);
 
     // Scrape available rooms and time slots
     const availableRooms = await scrapeAvailableRooms(page, date, startTime, endTime);
