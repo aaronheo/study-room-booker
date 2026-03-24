@@ -246,7 +246,7 @@
     <!-- Reservations tab -->
     <div class="page-section" id="reservations-page">
       <button class="primary" id="loadReservationsBtn">Load My Reservations</button>
-      <p class="help-text" style="margin-top:0.5rem;">This will log in and fetch your upcoming reservations. Approve the Duo push on your phone.</p>
+      <p class="help-text" id="reservationsHelp" style="margin-top:0.5rem;">This will log in and fetch your upcoming reservations. Approve the Duo push on your phone.</p>
       <div id="reservationsStatus" style="display:none;">
         <div class="status-log" id="reservationsLog"></div>
       </div>
@@ -510,14 +510,14 @@
     const reservationsStatus = document.getElementById('reservationsStatus');
     const reservationsLog = document.getElementById('reservationsLog');
 
-    loadReservationsBtn.addEventListener('click', async () => {
+    async function fetchReservations() {
       loadReservationsBtn.disabled = true;
       reservationsListDiv.innerHTML = '';
       reservationsStatus.style.display = 'block';
-      reservationsLog.innerHTML = '<div class="msg info">Loading reservations... Approve Duo push if prompted.</div>';
+      reservationsLog.innerHTML = '<div class="msg info">Loading reservations...</div>';
 
       try {
-        const res = await fetch('/api/reservations');
+        const res = await fetch('/api/reservations', { method: 'POST' });
         const data = await res.json();
 
         if (data.error) {
@@ -526,31 +526,71 @@
           return;
         }
 
-        reservationsStatus.style.display = false;
+        const jobId = data.jobId;
+        const evtSource = new EventSource(`/api/status/${jobId}`);
 
-        if (!data.reservations || data.reservations.length === 0) {
-          reservationsListDiv.innerHTML = '<p class="no-reservations">No upcoming reservations.</p>';
-        } else {
-          let html = `<table class="reservations-table">
-            <thead><tr><th>Title</th><th>Start</th><th>End</th><th>Room</th></tr></thead><tbody>`;
-          data.reservations.forEach(r => {
-            html += `<tr>
-              <td>${r.title}</td>
-              <td>${r.startDate}</td>
-              <td>${r.endDate}</td>
-              <td>${r.room}</td>
-            </tr>`;
-          });
-          html += '</tbody></table>';
-          reservationsListDiv.innerHTML = html;
-        }
+        evtSource.onmessage = (e) => {
+          const msg = JSON.parse(e.data);
 
-        reservationsLog.innerHTML = '<div class="msg success">Reservations loaded.</div>';
+          if (msg.status === 'progress') {
+            reservationsLog.innerHTML += `<div class="msg info">${msg.message}</div>`;
+            reservationsLog.scrollTop = reservationsLog.scrollHeight;
+          } else if (msg.status === 'done') {
+            evtSource.close();
+            reservationsStatus.style.display = 'none';
+
+            if (!msg.reservations || msg.reservations.length === 0) {
+              reservationsListDiv.innerHTML = '<p class="no-reservations">No upcoming reservations.</p>';
+            } else {
+              let html = `<table class="reservations-table">
+                <thead><tr><th>Title</th><th>Start</th><th>End</th><th>Room</th></tr></thead><tbody>`;
+              msg.reservations.forEach(r => {
+                html += `<tr>
+                  <td>${r.title}</td>
+                  <td>${r.startDate}</td>
+                  <td>${r.endDate}</td>
+                  <td>${r.room}</td>
+                </tr>`;
+              });
+              html += '</tbody></table>';
+              reservationsListDiv.innerHTML = html;
+            }
+
+            reservationsLog.innerHTML = '<div class="msg success">Reservations loaded.</div>';
+            loadReservationsBtn.disabled = false;
+          } else if (msg.status === 'error') {
+            evtSource.close();
+            reservationsLog.innerHTML = `<div class="msg error">${msg.message}</div>`;
+            loadReservationsBtn.disabled = false;
+          }
+        };
       } catch (err) {
         reservationsLog.innerHTML = `<div class="msg error">Failed: ${err.message}</div>`;
+        loadReservationsBtn.disabled = false;
       }
+    }
 
-      loadReservationsBtn.disabled = false;
+    loadReservationsBtn.addEventListener('click', fetchReservations);
+
+    // Update help text based on cached session status
+    async function updateSessionHint() {
+      try {
+        const res = await fetch('/api/session-status');
+        const data = await res.json();
+        const helpEl = document.getElementById('reservationsHelp');
+        if (data.hasCachedSession) {
+          helpEl.textContent = 'Using cached session — no Duo approval needed.';
+        } else {
+          helpEl.textContent = 'This will log in and fetch your upcoming reservations. Approve the Duo push on your phone.';
+        }
+      } catch {}
+    }
+
+    // Check session status when switching to reservations tab
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        if (tab.dataset.page === 'reservations') updateSessionHint();
+      });
     });
   </script>
 </body>

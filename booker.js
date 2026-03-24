@@ -972,4 +972,4 @@ async function checkAvailability(opts, onProgress) {
   }
 }
 
-module.exports = { bookRoom, getReservations, checkAvailability, KNOWN_ROOMS };
+module.exports = { bookRoom, getReservations, checkAvailability, KNOWN_ROOMS, hasCachedSession: () => getCachedCookies() !== null };

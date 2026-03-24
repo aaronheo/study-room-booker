@@ -1,6 +1,6 @@
 const express = require("express");
 const path = require("path");
-const { bookRoom, getReservations, checkAvailability } = require("./booker");
+const { bookRoom, getReservations, checkAvailability, hasCachedSession } = require("./booker");
 
 const app = express();
 app.use(express.json());
@@ -97,7 +97,11 @@ app.post("/api/availability", async (req, res) => {
   }
 });
 
-app.get("/api/reservations", async (req, res) => {
+app.get("/api/session-status", (req, res) => {
+  res.json({ hasCachedSession: hasCachedSession() });
+});
+
+app.post("/api/reservations", async (req, res) => {
   const username = process.env.UTAH_UID;
   const password = process.env.PASSWORD;
 
@@ -105,11 +109,17 @@ app.get("/api/reservations", async (req, res) => {
     return res.status(500).json({ error: "UTAH_UID and PASSWORD environment variables are not set" });
   }
 
+  const jobId = Date.now().toString(36) + "r";
+  res.json({ jobId });
+
   try {
-    const result = await getReservations({ username, password });
-    res.json(result);
+    const result = await getReservations(
+      { username, password },
+      (msg) => sendStatus(jobId, { status: "progress", message: msg })
+    );
+    sendStatus(jobId, { status: "done", ...result });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendStatus(jobId, { status: "error", message: err.message });
   }
 });
 
