@@ -27,8 +27,15 @@ function sendStatus(id, data) {
 }
 
 app.post("/api/book", async (req, res) => {
-  const { username, password, cookie, date, startTime, endTime, room } =
-    req.body;
+  const { date, startTime, endTime, room } = req.body;
+
+  // Use environment variables for credentials
+  const username = process.env.UID;
+  const password = process.env.PASSWORD;
+
+  if (!username || !password) {
+    return res.status(500).json({ error: "UID and PASSWORD environment variables are not set" });
+  }
 
   const jobId = Date.now().toString(36);
   res.json({ jobId });
@@ -38,7 +45,6 @@ app.post("/api/book", async (req, res) => {
       {
         username,
         password,
-        cookie,
         date,
         startTime,
         endTime,

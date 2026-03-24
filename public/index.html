@@ -175,31 +175,7 @@
     <h1>Study Room Booker</h1>
     <p class="subtitle">University of Utah - Marriott Library</p>
 
-    <!-- Auth method tabs -->
-    <div class="tabs">
-      <button class="tab active" data-tab="credentials">Email &amp; Password</button>
-      <button class="tab" data-tab="cookie">Session Cookie</button>
-    </div>
-
-    <!-- Credentials auth -->
-    <div class="auth-section active" id="credentials-section">
-      <label for="username">Email</label>
-      <input type="email" id="username" placeholder="u1234567@utah.edu">
-      <label for="password">Password</label>
-      <input type="password" id="password" placeholder="Your password">
-      <p class="help-text">After submitting, approve the Duo push on your phone.</p>
-    </div>
-
-    <!-- Cookie auth -->
-    <div class="auth-section" id="cookie-section">
-      <label for="cookie">Session Cookie</label>
-      <textarea id="cookie" placeholder="Paste cookie string from browser DevTools..."></textarea>
-      <p class="help-text">
-        Open DevTools &rarr; Application &rarr; Cookies &rarr; copy all cookies from scheduling.tools.lib.utah.edu
-      </p>
-    </div>
-
-    <hr class="divider">
+    <p class="help-text">Credentials are configured via environment variables. After clicking Book, approve the Duo push on your phone.</p>
 
     <!-- Booking preferences -->
     <label for="date">Date</label>
@@ -241,16 +217,6 @@
   </div>
 
   <script>
-    // Tab switching
-    document.querySelectorAll('.tab').forEach(tab => {
-      tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        document.querySelectorAll('.auth-section').forEach(s => s.classList.remove('active'));
-        tab.classList.add('active');
-        document.getElementById(tab.dataset.tab + '-section').classList.add('active');
-      });
-    });
-
     const bookBtn = document.getElementById('bookBtn');
     const statusDiv = document.getElementById('status');
     const statusLog = document.getElementById('statusLog');
@@ -277,7 +243,6 @@
       statusLog.innerHTML = '';
       bookBtn.disabled = true;
 
-      const activeTab = document.querySelector('.tab.active').dataset.tab;
       const body = {
         date: formatDate(document.getElementById('date').value),
         startTime: document.getElementById('startTime').value,
@@ -285,12 +250,7 @@
         room: overrideRoom || document.getElementById('room').value,
       };
 
-      if (activeTab === 'credentials') {
-        body.username = document.getElementById('username').value;
-        body.password = document.getElementById('password').value;
-      } else {
-        body.cookie = document.getElementById('cookie').value;
-      }
+      // Credentials come from server-side env vars
 
       addLog('Starting booking process...', 'info');
 
