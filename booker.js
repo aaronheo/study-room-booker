@@ -545,6 +545,58 @@ async function clickAndBook(page, room, startTime, endTime, log) {
   await page.select("#EndPeriod", endValue);
   log(`Set end time to ${endTime}`);
 
+  // Fill required custom attribute fields
+  // These are labeled fields like "Class Size (required)", "Name (required)", etc.
+  const customFields = {
+    "class size": "1",
+    "department": "1",
+    "name": "aaron",
+    "e-mail": "heoaaron@gmail.com",
+    "email": "heoaaron@gmail.com",
+  };
+
+  const filledFields = await page.evaluate((fields) => {
+    const filled = [];
+    // Find all labels and match to their inputs
+    const labels = document.querySelectorAll("label");
+    for (const label of labels) {
+      const labelText = (label.textContent || "").toLowerCase().replace(/\(.*?\)/g, "").trim();
+      for (const [key, value] of Object.entries(fields)) {
+        if (labelText.includes(key)) {
+          // Find the associated input via 'for' attribute or next sibling
+          const inputId = label.getAttribute("for");
+          let input = inputId ? document.getElementById(inputId) : null;
+          if (!input) {
+            input = label.parentElement?.querySelector("input, select, textarea");
+          }
+          if (!input) {
+            input = label.nextElementSibling;
+          }
+          if (input && (input.tagName === "INPUT" || input.tagName === "TEXTAREA")) {
+            input.value = value;
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            filled.push(`${key} = ${value}`);
+          } else if (input && input.tagName === "SELECT") {
+            // Try to select matching option
+            for (const opt of input.options) {
+              if (opt.text.toLowerCase().includes(value.toLowerCase()) || opt.value === value) {
+                input.value = opt.value;
+                input.dispatchEvent(new Event("change", { bubbles: true }));
+                filled.push(`${key} = ${opt.text}`);
+                break;
+              }
+            }
+          }
+          break;
+        }
+      }
+    }
+    return filled;
+  }, customFields);
+
+  log(`Filled custom fields: ${filledFields.join(", ") || "none found"}`);
+
   // Click the "Create" button (type="button", class="button save create")
   log("Submitting reservation...");
   const createBtn = await page.$("button.save.create");
