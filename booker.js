@@ -483,6 +483,44 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log) {
   // The schedule page is a grid: header row has time labels, each room row
   // has td cells with colspan indicating how many 10-min slots they span.
   // Cell classes indicate status: "reservable", "reserved", "unreservable", etc.
+  // Debug: log what's actually on the page
+  const pageDebug = await page.evaluate(() => {
+    const allLinks = Array.from(document.querySelectorAll('a[href*="reservation.php"]'));
+    const linkTexts = allLinks.map(a => ({ text: a.textContent?.trim(), href: a.href }));
+    const tables = document.querySelectorAll("table");
+    const tableInfo = Array.from(tables).map((t, i) => {
+      const firstRow = t.querySelector("tr");
+      const cells = firstRow ? Array.from(firstRow.querySelectorAll("td, th")).slice(0, 5) : [];
+      return {
+        index: i,
+        rows: t.querySelectorAll("tr").length,
+        firstRowCells: cells.map(c => c.textContent?.trim().substring(0, 30)),
+      };
+    });
+    return {
+      url: location.href,
+      title: document.title,
+      reservationLinks: linkTexts.length,
+      linkSamples: linkTexts.slice(0, 5),
+      tables: tableInfo,
+      bodySnippet: document.body?.innerText?.substring(0, 500),
+    };
+  });
+  if (log) {
+    log(`Page debug - URL: ${pageDebug.url}, title: ${pageDebug.title}`);
+    log(`Reservation links found: ${pageDebug.reservationLinks}`);
+    if (pageDebug.linkSamples.length > 0) {
+      log(`Link samples: ${JSON.stringify(pageDebug.linkSamples)}`);
+    }
+    log(`Tables found: ${pageDebug.tables.length}`);
+    for (const t of pageDebug.tables) {
+      log(`  Table ${t.index}: ${t.rows} rows, first row cells: ${JSON.stringify(t.firstRowCells)}`);
+    }
+    if (pageDebug.reservationLinks === 0) {
+      log(`Body snippet: ${pageDebug.bodySnippet}`);
+    }
+  }
+
   const rooms = await page.evaluate(
     (startTime, endTime) => {
       const results = [];
