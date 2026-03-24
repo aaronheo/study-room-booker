@@ -4,16 +4,16 @@ const BASE_URL = "https://scheduling.tools.lib.utah.edu";
 const SCHEDULE_URL = (date) =>
   `${BASE_URL}/Web/schedule.php?sd=${date}`;
 
-// Known study rooms at Marriott Library - user can pick from these
+// Known study rooms at Marriott Library - scraped from actual site
 const KNOWN_ROOMS = [
-  "2130S Study room",
-  "2110S Study room",
-  "2120S Study room",
-  "2140S Study room",
-  "2150S Study room",
-  "2160S Study room",
-  "2170S Study room",
-  "2180S Study room",
+  "1738D Study Room",
+  "1750A Study Room",
+  "1750B Study Room",
+  "1750C Study Room",
+  "1750D Study Room",
+  "2101 Dumke Study Room",
+  "2103 Study Room",
+  "2105 Study Room",
 ];
 
 async function bookRoom(opts, onProgress) {
@@ -103,25 +103,6 @@ async function bookRoom(opts, onProgress) {
     }
 
     log("Schedule loaded. Looking for available rooms...");
-
-    // Log page structure to help debug scraping
-    const pageDebug = await page.evaluate(() => {
-      const ids = Array.from(document.querySelectorAll("[id]"))
-        .slice(0, 20)
-        .map((el) => `${el.tagName}#${el.id}`);
-      const classes = Array.from(document.querySelectorAll("[class]"))
-        .slice(0, 30)
-        .map((el) => `${el.tagName}.${el.className.split(" ").join(".")}`);
-      const links = Array.from(document.querySelectorAll("a[href*='reservation'], a[href*='schedule']"))
-        .slice(0, 10)
-        .map((a) => ({ text: a.textContent?.trim(), href: a.href }));
-      const tables = document.querySelectorAll("table").length;
-      const tds = Array.from(document.querySelectorAll("td[data-resourceid], td[class*='reserv'], td[class*='slot']"))
-        .slice(0, 5)
-        .map((td) => ({ class: td.className, attrs: Array.from(td.attributes).map((a) => `${a.name}=${a.value}`) }));
-      return { ids, classes, links, tables, tds, bodyLength: document.body?.innerHTML.length };
-    });
-    log(`Page structure: ${JSON.stringify(pageDebug)}`);
 
     // Scrape available rooms and time slots
     const availableRooms = await scrapeAvailableRooms(page, date, startTime, endTime);
@@ -427,179 +408,141 @@ async function handleCASLogin(page, username, password, log) {
 }
 
 async function scrapeAvailableRooms(page, date, startTime, endTime) {
-  // Booked Scheduler typically shows a table/grid with resources as rows
-  // and time slots as columns. Available slots are clickable.
-  const rooms = await page.evaluate(
-    (startTime, endTime) => {
-      const results = [];
+  // The schedule page has links like:
+  // <a href="/Web/reservation.php?rid=77&sid=1&rd=2026-03-29">1738D Study Room</a>
+  const rooms = await page.evaluate(() => {
+    const links = Array.from(
+      document.querySelectorAll('a[href*="reservation.php"]')
+    );
+    const seen = new Set();
+    const results = [];
 
-      // Strategy 1: Look for resource rows in the schedule table
-      const resourceRows = document.querySelectorAll(
-        ".resourceName, .resource-name, td.resourceName, [data-resourceid]"
-      );
+    for (const link of links) {
+      const name = link.textContent?.trim();
+      if (!name || seen.has(name)) continue;
+      // Skip non-room links (like nav links)
+      if (!name.toLowerCase().includes("room") && !name.toLowerCase().includes("study")) continue;
+      seen.add(name);
 
-      resourceRows.forEach((row) => {
-        const name =
-          row.textContent?.trim() ||
-          row.getAttribute("data-resourcename") ||
-          "";
-        const resourceId =
-          row.getAttribute("data-resourceid") ||
-          row.closest("[data-resourceid]")?.getAttribute("data-resourceid") ||
-          "";
+      const href = link.href;
+      const ridMatch = href.match(/rid=(\d+)/);
+      const rid = ridMatch ? ridMatch[1] : "";
 
-        if (name) {
-          // Check if the time slot is available (look for reservable slots)
-          const scheduleRow = row.closest("tr") || row.parentElement;
-          const slots = scheduleRow
-            ? scheduleRow.querySelectorAll(
-                '.reservable, .unreserved, td[data-start], .slot.open, a[href*="reservation"]'
-              )
-            : [];
-
-          const isAvailable = slots.length > 0;
-          if (isAvailable) {
-            results.push({
-              name,
-              resourceId,
-              available: true,
-            });
-          }
-        }
+      results.push({
+        name,
+        resourceId: rid,
+        href,
+        available: true,
       });
+    }
 
-      // Strategy 2: If no resources found with Strategy 1, look for any
-      // clickable reservation slots
-      if (results.length === 0) {
-        const allSlots = document.querySelectorAll(
-          'td.reservable, td.unreserved, a.reservable, [data-href*="reservation"], .slot'
-        );
-        const seenResources = new Set();
-
-        allSlots.forEach((slot) => {
-          const resourceName =
-            slot.getAttribute("data-resourcename") ||
-            slot.closest("tr")?.querySelector(".resourceName")?.textContent?.trim() ||
-            slot.getAttribute("title") ||
-            "";
-
-          if (resourceName && !seenResources.has(resourceName)) {
-            seenResources.add(resourceName);
-            results.push({
-              name: resourceName,
-              resourceId:
-                slot.getAttribute("data-resourceid") || "",
-              available: true,
-            });
-          }
-        });
-      }
-
-      return results;
-    },
-    startTime,
-    endTime
-  );
+    return results;
+  });
 
   return rooms;
 }
 
 async function clickAndBook(page, room, startTime, endTime, log) {
-  log(`Attempting to book ${room.name}...`);
+  log(`Attempting to book ${room.name} (rid=${room.resourceId})...`);
 
-  // Try to click on the room's time slot to open the reservation dialog
-  const booked = await page.evaluate(
-    (roomName, startTime) => {
-      // Find the row for this room
-      const allElements = document.querySelectorAll(
-        ".resourceName, [data-resourcename]"
-      );
-      for (const el of allElements) {
-        const name =
-          el.textContent?.trim() || el.getAttribute("data-resourcename") || "";
-        if (name.toLowerCase().includes(roomName.toLowerCase())) {
-          // Find the closest reservable slot in this row
-          const row = el.closest("tr") || el.parentElement;
-          if (row) {
-            const slot = row.querySelector(
-              '.reservable, .unreserved, td[data-start], a[href*="reservation"]'
-            );
-            if (slot) {
-              slot.click();
-              return true;
-            }
-          }
-        }
-      }
-      return false;
-    },
-    room.name,
-    startTime
-  );
+  // Navigate directly to the reservation page for this room
+  const reservationUrl = room.href;
+  log(`Navigating to reservation page: ${reservationUrl}`);
+  await page.goto(reservationUrl, { waitUntil: "networkidle2" });
 
-  if (!booked) {
-    throw new Error(
-      `Could not find clickable slot for ${room.name}. The page structure may have changed.`
-    );
-  }
+  log(`Reservation page loaded. URL: ${page.url()}`);
 
-  // Wait for reservation dialog/form to appear
-  log("Reservation form opening...");
-  await page.waitForSelector(
-    '#reservation-form, .reservation-dialog, [id*="reservation"], form[action*="reservation"], .modal',
-    { timeout: 15000 }
-  );
+  // Log the form structure so we know what fields exist
+  const formDebug = await page.evaluate(() => {
+    const inputs = Array.from(document.querySelectorAll("input, select, textarea"));
+    return inputs.slice(0, 20).map((el) => ({
+      tag: el.tagName,
+      type: el.type,
+      name: el.name,
+      id: el.id,
+      value: el.value,
+      placeholder: el.placeholder,
+    }));
+  });
+  log(`Form fields: ${JSON.stringify(formDebug)}`);
 
-  // Fill in the time fields
-  log("Setting reservation times...");
+  // Log buttons
+  const formButtons = await page.evaluate(() => {
+    const btns = Array.from(document.querySelectorAll("button, input[type='submit']"));
+    return btns.map((b) => ({
+      text: b.textContent?.trim(),
+      type: b.type,
+      name: b.name,
+      id: b.id,
+      className: b.className,
+    }));
+  });
+  log(`Form buttons: ${JSON.stringify(formButtons)}`);
 
   // Try to set start time
   const startInput = await page.$(
-    'input[id*="BeginTime"], input[name*="beginTime"], input[id*="startTime"], #BeginTime, #startTime'
+    '#BeginTime, #startTime, input[id*="eginTime"], input[id*="tartTime"], input[name*="begin"], input[name*="start"]'
   );
   if (startInput) {
     await startInput.click({ clickCount: 3 });
     await startInput.type(startTime);
+    log(`Set start time to ${startTime}`);
+  } else {
+    log("Could not find start time input");
   }
 
   // Try to set end time
   const endInput = await page.$(
-    'input[id*="EndTime"], input[name*="endTime"], input[id*="endTime"], #EndTime, #endTime'
+    '#EndTime, #endTime, input[id*="ndTime"], input[name*="end"]'
   );
   if (endInput) {
     await endInput.click({ clickCount: 3 });
     await endInput.type(endTime);
+    log(`Set end time to ${endTime}`);
+  } else {
+    log("Could not find end time input");
   }
 
   // Click submit/book button
   log("Submitting reservation...");
   const submitBtn = await page.$(
-    'button[type="submit"], input[type="submit"], .btn-primary, #btnSubmit, .save, button.save'
+    'button.save, button[type="submit"], input[type="submit"], .btn-primary, #btnSubmit, button[name="save"]'
   );
   if (submitBtn) {
-    await submitBtn.click();
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => {}),
+      submitBtn.click(),
+    ]);
+  } else {
+    log("Could not find submit button!");
   }
 
-  // Wait for confirmation
-  await page.waitForTimeout(3000);
+  // Wait and check for success
+  await new Promise((r) => setTimeout(r, 2000));
 
-  // Check for success message
-  const success = await page.evaluate(() => {
-    const body = document.body.innerText.toLowerCase();
-    return (
+  const result = await page.evaluate(() => {
+    const body = document.body.innerText;
+    const success =
       body.includes("successfully") ||
       body.includes("confirmed") ||
       body.includes("booked") ||
-      body.includes("created")
-    );
+      body.includes("created") ||
+      body.includes("Created");
+    const errors = [];
+    const errorEls = document.querySelectorAll(".error, .alert-danger, .validation-error, .alert");
+    errorEls.forEach((el) => {
+      const text = el.textContent?.trim();
+      if (text) errors.push(text);
+    });
+    return { success, errors, bodySnippet: body.substring(0, 500) };
   });
 
-  if (!success) {
-    log(
-      "Could not confirm booking success. Please check the browser window."
-    );
-  } else {
+  if (result.success) {
     log("Reservation confirmed!");
+  } else if (result.errors.length > 0) {
+    log(`Reservation errors: ${result.errors.join("; ")}`);
+  } else {
+    log(`Reservation result unclear. Page content: ${result.bodySnippet}`);
   }
 }
 
