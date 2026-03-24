@@ -284,18 +284,12 @@ async function handleCASLogin(page, username, password, log) {
       }
     }
 
-    // Poll every 10 seconds for Duo approval (up to 2 minutes)
-    // After approval, we may land on: the scheduling site, CAS, or go.utah.edu
-    log("Waiting for Duo approval (checking every 10s, up to 2 minutes)...");
-    const maxAttempts = 12; // 12 × 10s = 120s
+    // Poll every 5 seconds for Duo approval (up to 2 minutes)
+    log("Waiting for Duo approval (checking every 5s, up to 2 minutes)...");
+    const maxAttempts = 24; // 24 × 5s = 120s
     let approved = false;
     for (let i = 1; i <= maxAttempts; i++) {
       currentUrl = page.url();
-      // Check if we've left the Duo/CAS login pages
-      const onDuoOrLogin =
-        currentUrl.includes("duosecurity.com") ||
-        currentUrl.includes("duo.com") ||
-        currentUrl.includes("cas.utah.edu/cas/login");
       const onSchedulingSite = currentUrl.includes(BASE_URL);
 
       if (onSchedulingSite) {
@@ -303,32 +297,100 @@ async function handleCASLogin(page, username, password, log) {
         break;
       }
 
-      // If we're no longer on Duo/CAS login, we might be mid-redirect
-      if (!onDuoOrLogin && i > 1) {
-        log(`Redirecting... current URL: ${currentUrl}`);
-        // Give it a moment to finish redirecting
-        await new Promise((r) => setTimeout(r, 5000));
+      // If still on Duo page, check for post-approval state and try to proceed
+      if (currentUrl.includes("duosecurity.com") || currentUrl.includes("duo.com")) {
+        const duoState = await page.evaluate(() => {
+          const body = document.body ? document.body.innerText : "";
+          const html = document.body ? document.body.innerHTML.substring(0, 1000) : "";
+          // Look for success indicators
+          const hasSuccess =
+            body.includes("Success") ||
+            body.includes("Authenticated") ||
+            body.includes("Logging you in") ||
+            body.includes("approved") ||
+            document.querySelector(".success-status, .access-granted, [data-testid='success']") !== null;
+          // Look for "Trust browser" prompt that appears after approval
+          const hasTrustPrompt =
+            body.includes("trust this browser") ||
+            body.includes("Trust browser") ||
+            body.includes("remember me") ||
+            body.includes("Is this your device");
+          // Look for any clickable button that might continue the flow
+          const btns = Array.from(document.querySelectorAll("button, input[type='submit'], [role='button'], a.btn"));
+          const btnTexts = btns.map((b) => (b.textContent || "").trim()).filter(Boolean);
+          return { hasSuccess, hasTrustPrompt, btnTexts, bodySnippet: body.substring(0, 300), htmlSnippet: html };
+        });
+
+        if (duoState.hasSuccess || duoState.hasTrustPrompt) {
+          log(`Duo approved! State: success=${duoState.hasSuccess}, trustPrompt=${duoState.hasTrustPrompt}`);
+          log(`Buttons on page: ${JSON.stringify(duoState.btnTexts)}`);
+
+          // Try to click through trust/continue prompts
+          await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll("button, input[type='submit'], [role='button'], a.btn"));
+            for (const btn of btns) {
+              const text = (btn.textContent || "").toLowerCase();
+              if (
+                text.includes("trust") ||
+                text.includes("yes") ||
+                text.includes("continue") ||
+                text.includes("done") ||
+                text.includes("log in") ||
+                text.includes("proceed")
+              ) {
+                btn.click();
+                return;
+              }
+            }
+            // Click any primary button as fallback
+            const primary = document.querySelector("button.btn-primary, button[type='submit']");
+            if (primary) primary.click();
+          });
+
+          // Wait for redirect after clicking
+          await new Promise((r) => setTimeout(r, 5000));
+          if (page.url().includes(BASE_URL)) {
+            approved = true;
+            break;
+          }
+          log(`After clicking trust/continue, URL: ${page.url()}`);
+        }
+
+        if (i % 4 === 0) {
+          // Every 20s, log the Duo page state for debugging
+          log(`Duo page body: ${duoState.bodySnippet}`);
+        }
+      }
+
+      // If we've left Duo/CAS, we might be mid-redirect
+      const onDuoOrCas =
+        currentUrl.includes("duosecurity.com") ||
+        currentUrl.includes("duo.com") ||
+        currentUrl.includes("cas.utah.edu");
+      if (!onDuoOrCas) {
+        log(`No longer on Duo/CAS. URL: ${currentUrl}`);
+        await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 10000 }).catch(() => {});
         if (page.url().includes(BASE_URL)) {
           approved = true;
           break;
         }
       }
 
-      log(`Still waiting for Duo approval... (${i * 10}s / 120s) [URL: ${currentUrl}]`);
-      await new Promise((r) => setTimeout(r, 10000));
+      log(`Still waiting for Duo approval... (${i * 5}s / 120s) [URL: ${currentUrl}]`);
+      await new Promise((r) => setTimeout(r, 5000));
     }
 
-    if (!approved) {
-      // One last check - maybe we redirected during the last wait
-      if (page.url().includes(BASE_URL)) {
-        approved = true;
-      }
+    if (!approved && page.url().includes(BASE_URL)) {
+      approved = true;
     }
 
     if (!approved) {
       const finalUrl = page.url();
+      const finalBody = await page.evaluate(() =>
+        document.body ? document.body.innerText.substring(0, 300) : ""
+      );
       throw new Error(
-        `Duo authentication timed out after 2 minutes. Final URL: ${finalUrl}`
+        `Duo authentication timed out. Final URL: ${finalUrl}\nPage content: ${finalBody}`
       );
     }
 
