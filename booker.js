@@ -1,8 +1,8 @@
 const puppeteer = require("puppeteer");
 
 const BASE_URL = "https://scheduling.tools.lib.utah.edu";
-const SCHEDULE_URL = (date) =>
-  `${BASE_URL}/Web/schedule.php?sd=${date}`;
+const SCHEDULE_URL = (date, sid) =>
+  `${BASE_URL}/Web/schedule.php?sd=${date}${sid ? `&sid=${sid}` : ""}`;
 
 function getNextFriday() {
   const today = new Date();
@@ -54,7 +54,7 @@ function getLaunchOpts() {
 // Navigate to a target URL, using cached cookies if available.
 // If redirected to login, performs CAS+Duo auth and caches the new cookies.
 // Returns { page, browser } with the page on the target URL.
-async function launchAndAuth(targetUrl, username, password, log) {
+async function launchAndAuth(targetUrl, username, password, log, debug) {
   const browser = await puppeteer.launch(getLaunchOpts());
   const page = await browser.newPage();
   page.setDefaultTimeout(120000);
@@ -83,7 +83,7 @@ async function launchAndAuth(targetUrl, username, password, log) {
       throw new Error("Login required but no credentials provided.");
     }
     log("Login page detected. Entering credentials...");
-    await handleCASLogin(page, username, password, log);
+    await handleCASLogin(page, username, password, log, debug);
 
     // Save cookies after successful auth
     const newCookies = await page.cookies();
@@ -132,36 +132,37 @@ async function bookRoom(opts, onProgress) {
     console.log(`[booker] ${msg}`);
     if (onProgress) onProgress(msg);
   };
+  const debug = (msg) => console.log(`[booker:debug] ${msg}`);
 
   log(`Navigating to schedule for ${date}...`);
   const { page, browser } = await launchAndAuth(
     SCHEDULE_URL(date),
     username,
     password,
-    log
+    log,
+    debug
   );
 
   try {
     // After auth, we may land on dashboard instead of schedule - navigate there
     if (!page.url().includes("schedule.php")) {
-      log(`Landed on ${page.url()} after auth. Navigating to schedule...`);
+      debug(`Landed on ${page.url()} after auth. Navigating to schedule...`);
       await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
     }
 
-    log(`On schedule page. URL: ${page.url()}`);
+    debug(`On schedule page. URL: ${page.url()}`);
     log("Waiting for schedule rooms to load...");
     try {
       await page.waitForSelector('a[href*="reservation.php"]', {
         timeout: 30000,
       });
     } catch {
-      // Log page content to help debug what selectors are actually on the page
       const pageTitle = await page.title();
       const bodySnippet = await page.evaluate(() =>
         document.body ? document.body.innerHTML.substring(0, 500) : "no body"
       );
-      log(`Page title: ${pageTitle}`);
-      log(`Page HTML snippet: ${bodySnippet}`);
+      debug(`Page title: ${pageTitle}`);
+      debug(`Page HTML snippet: ${bodySnippet}`);
       throw new Error(
         "Schedule page did not load expected selectors. See logs above for page content."
       );
@@ -170,7 +171,7 @@ async function bookRoom(opts, onProgress) {
     log("Schedule loaded. Looking for available rooms...");
 
     // Scrape available rooms and time slots
-    const availableRooms = await scrapeAvailableRooms(page, date, startTime, endTime, log);
+    const availableRooms = await scrapeAvailableRooms(page, date, startTime, endTime, log, debug);
 
     if (availableRooms.length === 0) {
       log("No rooms available for the selected time slot.");
@@ -189,7 +190,7 @@ async function bookRoom(opts, onProgress) {
 
     if (preferredRoom) {
       log(`Preferred room "${room}" is available! Booking...`);
-      const booked = await clickAndBook(page, preferredRoom, startTime, endTime, log);
+      const booked = await clickAndBook(page, preferredRoom, startTime, endTime, log, debug);
       await browser.close();
       if (booked) {
         return {
@@ -222,7 +223,7 @@ async function bookRoom(opts, onProgress) {
   }
 }
 
-async function handleCASLogin(page, username, password, log) {
+async function handleCASLogin(page, username, password, log, debug) {
   // University of Utah CAS login
   try {
     // Wait for username field
@@ -238,7 +239,7 @@ async function handleCASLogin(page, username, password, log) {
         : 'input[type="text"]';
 
     await page.type(usernameSelector, username, { delay: 50 });
-    log("Username entered.");
+    debug("Username entered.");
 
     // Some CAS systems have a "Next" button before password
     const nextBtn = await page.$(
@@ -262,14 +263,14 @@ async function handleCASLogin(page, username, password, log) {
         : 'input[type="password"]';
 
     await page.type(passwordSelector, password, { delay: 50 });
-    log("Password entered.");
+    debug("Password entered.");
 
     // Click login/submit button and wait for navigation to Duo
     const submitBtn = await page.$(
       'button[type="submit"], input[type="submit"], button[name="submit"], .btn-submit, #submit'
     );
 
-    log("Submitting credentials...");
+    debug("Submitting credentials...");
     // Use Promise.all to click and wait for navigation simultaneously
     await Promise.all([
       page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }).catch(() => {}),
@@ -280,14 +281,14 @@ async function handleCASLogin(page, username, password, log) {
     log(">>> Please approve the Duo push on your phone <<<");
 
     let currentUrl = page.url();
-    log(`After credentials, current URL: ${currentUrl}`);
+    debug(`After credentials, current URL: ${currentUrl}`);
 
     // Check for Duo iframe (legacy Duo)
     const duoFrame = await page.$(
       'iframe[id="duo_iframe"], #duo-frame, iframe[src*="duosecurity"]'
     );
     if (duoFrame) {
-      log("Duo iframe detected. Trying to auto-click push...");
+      debug("Duo iframe detected. Trying to auto-click push...");
       try {
         const frame = await duoFrame.contentFrame();
         if (frame) {
@@ -296,18 +297,18 @@ async function handleCASLogin(page, username, password, log) {
           );
           if (pushBtn) {
             await pushBtn.click();
-            log("Auto-clicked 'Send Me a Push'. Approve on your phone.");
+            debug("Auto-clicked 'Send Me a Push'.");
           }
         }
       } catch {
-        log("Could not auto-click Duo push. Please manually approve.");
+        debug("Could not auto-click Duo push.");
       }
     }
 
     // Check for Duo Universal Prompt (redirect-based, not iframe)
     currentUrl = page.url();
     if (currentUrl.includes("duosecurity.com") || currentUrl.includes("duo.com")) {
-      log("Duo Universal Prompt detected. Waiting for page to fully load...");
+      debug("Duo Universal Prompt detected. Waiting for page to fully load...");
 
       // Wait for Duo page to be fully loaded and interactive
       await page.waitForFunction(
@@ -328,7 +329,7 @@ async function handleCASLogin(page, username, password, log) {
           ariaLabel: b.getAttribute("aria-label"),
         }));
       });
-      log(`Duo page buttons: ${JSON.stringify(buttons)}`);
+      debug(`Duo page buttons: ${JSON.stringify(buttons)}`);
 
       // Try clicking "Send Me a Push" or similar button
       const clicked = await page.evaluate(() => {
@@ -357,14 +358,15 @@ async function handleCASLogin(page, username, password, log) {
       });
 
       if (clicked) {
-        log(`Auto-clicked Duo button: "${clicked}". Approve on your phone.`);
+        debug(`Auto-clicked Duo button: "${clicked}".`);
       } else {
-        log("Could not find a push button on Duo page. Please approve manually.");
+        debug("Could not find a push button on Duo page.");
       }
     }
 
     // Poll every 5 seconds for Duo approval (up to 2 minutes)
-    log("Waiting for Duo approval (checking every 5s, up to 2 minutes)...");
+    log("Waiting for Duo approval...");
+    log("duo_approval_needed");
     const maxAttempts = 24; // 24 × 5s = 120s
     let approved = false;
     for (let i = 1; i <= maxAttempts; i++) {
@@ -401,8 +403,8 @@ async function handleCASLogin(page, username, password, log) {
         });
 
         if (duoState.hasSuccess || duoState.hasTrustPrompt) {
-          log(`Duo approved! State: success=${duoState.hasSuccess}, trustPrompt=${duoState.hasTrustPrompt}`);
-          log(`Buttons on page: ${JSON.stringify(duoState.btnTexts)}`);
+          debug(`Duo approved! State: success=${duoState.hasSuccess}, trustPrompt=${duoState.hasTrustPrompt}`);
+          debug(`Buttons on page: ${JSON.stringify(duoState.btnTexts)}`);
 
           // Try to click through trust/continue prompts
           await page.evaluate(() => {
@@ -432,12 +434,11 @@ async function handleCASLogin(page, username, password, log) {
             approved = true;
             break;
           }
-          log(`After clicking trust/continue, URL: ${page.url()}`);
+          debug(`After clicking trust/continue, URL: ${page.url()}`);
         }
 
         if (i % 4 === 0) {
-          // Every 20s, log the Duo page state for debugging
-          log(`Duo page body: ${duoState.bodySnippet}`);
+          debug(`Duo page body: ${duoState.bodySnippet}`);
         }
       }
 
@@ -447,7 +448,7 @@ async function handleCASLogin(page, username, password, log) {
         currentUrl.includes("duo.com") ||
         currentUrl.includes("cas.utah.edu");
       if (!onDuoOrCas) {
-        log(`No longer on Duo/CAS. URL: ${currentUrl}`);
+        debug(`No longer on Duo/CAS. URL: ${currentUrl}`);
         await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 10000 }).catch(() => {});
         if (page.url().includes(BASE_URL)) {
           approved = true;
@@ -455,7 +456,7 @@ async function handleCASLogin(page, username, password, log) {
         }
       }
 
-      log(`Still waiting for Duo approval... (${i * 5}s / 120s) [URL: ${currentUrl}]`);
+      debug(`Still waiting for Duo approval... (${i * 5}s / 120s) [URL: ${currentUrl}]`);
       await new Promise((r) => setTimeout(r, 5000));
     }
 
@@ -479,10 +480,165 @@ async function handleCASLogin(page, username, password, log) {
   }
 }
 
-async function scrapeAvailableRooms(page, date, startTime, endTime, log) {
+async function scrapeScheduleIds(page, debug) {
+  // Detect all available schedule IDs from the page (dropdown, links, etc.)
+  const scheduleIds = await page.evaluate(() => {
+    const ids = new Set();
+
+    // Check for schedule selector dropdown (common in Booked Scheduler)
+    const selects = document.querySelectorAll('select');
+    for (const sel of selects) {
+      for (const opt of sel.options) {
+        // Schedule options typically have numeric values
+        if (opt.value && /^\d+$/.test(opt.value)) {
+          ids.add(opt.value);
+        }
+      }
+    }
+
+    // Check for schedule links/tabs (e.g., <a href="schedule.php?sid=123">)
+    const links = document.querySelectorAll('a[href*="schedule.php"]');
+    for (const link of links) {
+      const match = link.href.match(/sid=(\d+)/);
+      if (match) {
+        ids.add(match[1]);
+      }
+    }
+
+    // Check for hidden inputs or data attributes with schedule IDs
+    const hiddenInputs = document.querySelectorAll('input[name*="schedule"], input[name*="sid"]');
+    for (const inp of hiddenInputs) {
+      if (inp.value && /^\d+$/.test(inp.value)) {
+        ids.add(inp.value);
+      }
+    }
+
+    // Check current URL for sid parameter
+    const urlParams = new URLSearchParams(location.search);
+    const currentSid = urlParams.get('sid');
+    if (currentSid) ids.add(currentSid);
+
+    return Array.from(ids);
+  });
+
+  if (debug) {
+    debug(`Found schedule IDs on page: ${JSON.stringify(scheduleIds)}`);
+  }
+
+  return scheduleIds;
+}
+
+function scrapeCurrentPageRooms(startTime, endTime) {
+  // This runs inside page.evaluate - scrapes rooms from the currently loaded schedule
+  const results = [];
+
+  const tables = document.querySelectorAll("table");
+  let scheduleTable = null;
+  for (const table of tables) {
+    const headerCells = table.querySelectorAll("tr:first-child td, tr:first-child th");
+    for (const cell of headerCells) {
+      if (cell.textContent?.includes("AM") || cell.textContent?.includes("PM")) {
+        scheduleTable = table;
+        break;
+      }
+    }
+    if (scheduleTable) break;
+  }
+
+  if (!scheduleTable) return results;
+
+  const headerRow = scheduleTable.querySelector("tr");
+  const headerCells = headerRow ? headerRow.querySelectorAll("td, th") : [];
+  const timeColumns = [];
+  let colIdx = 0;
+
+  for (const cell of headerCells) {
+    const colspan = parseInt(cell.getAttribute("colspan") || "1", 10);
+    const text = cell.textContent?.trim() || "";
+
+    const timeMatch = text.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+    if (timeMatch) {
+      let hours = parseInt(timeMatch[1], 10);
+      const mins = parseInt(timeMatch[2], 10);
+      const ampm = timeMatch[3].toUpperCase();
+      if (ampm === "PM" && hours !== 12) hours += 12;
+      if (ampm === "AM" && hours === 12) hours = 0;
+      const time24 = `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+      timeColumns.push({ time: time24, colStart: colIdx, colEnd: colIdx + colspan });
+    }
+
+    colIdx += colspan;
+  }
+
+  if (timeColumns.length === 0) return results;
+
+  function timeToMinutes(t) {
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+  }
+
+  const startMins = timeToMinutes(startTime);
+  const endMins = timeToMinutes(endTime);
+
+  const firstTime = timeColumns[0];
+  const firstMins = timeToMinutes(firstTime.time);
+  const slotsPerMin = 1 / 10;
+  const startCol = firstTime.colStart + Math.round((startMins - firstMins) * slotsPerMin);
+  const endCol = firstTime.colStart + Math.round((endMins - firstMins) * slotsPerMin);
+
+  const rows = scheduleTable.querySelectorAll("tr");
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+
+    const roomLink = row.querySelector('a[href*="reservation.php"]');
+    if (!roomLink) continue;
+
+    const name = roomLink.textContent?.trim();
+    if (!name) continue;
+    if (!name.startsWith("2130")) continue;
+
+    const href = roomLink.href;
+    const ridMatch = href.match(/rid=(\d+)/);
+    const rid = ridMatch ? ridMatch[1] : "";
+
+    let cellCol = 0;
+    let allReservable = true;
+    let hasOverlap = false;
+
+    const cells = row.querySelectorAll("td, th");
+    for (const cell of cells) {
+      const colspan = parseInt(cell.getAttribute("colspan") || "1", 10);
+      const cellStart = cellCol;
+      const cellEnd = cellCol + colspan;
+
+      if (cellEnd > startCol && cellStart < endCol) {
+        hasOverlap = true;
+        const cellClass = (cell.className || "").toLowerCase();
+        if (!cellClass.includes("reservable") || cellClass.includes("unreservable")) {
+          allReservable = false;
+          break;
+        }
+      }
+
+      cellCol += colspan;
+    }
+
+    results.push({
+      name,
+      resourceId: rid,
+      href,
+      available: hasOverlap && allReservable,
+    });
+  }
+
+  return results;
+}
+
+async function scrapeAvailableRooms(page, date, startTime, endTime, log, debug) {
   // The schedule page is a grid: header row has time labels, each room row
   // has td cells with colspan indicating how many 10-min slots they span.
   // Cell classes indicate status: "reservable", "reserved", "unreservable", etc.
+
   // Debug: log what's actually on the page
   const pageDebug = await page.evaluate(() => {
     const allLinks = Array.from(document.querySelectorAll('a[href*="reservation.php"]'));
@@ -506,156 +662,111 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log) {
       bodySnippet: document.body?.innerText?.substring(0, 500),
     };
   });
-  if (log) {
-    log(`Page debug - URL: ${pageDebug.url}, title: ${pageDebug.title}`);
-    log(`Reservation links found: ${pageDebug.reservationLinks}`);
+  if (debug) {
+    debug(`Page debug - URL: ${pageDebug.url}, title: ${pageDebug.title}`);
+    debug(`Reservation links found: ${pageDebug.reservationLinks}`);
     if (pageDebug.linkSamples.length > 0) {
-      log(`Link samples: ${JSON.stringify(pageDebug.linkSamples)}`);
+      debug(`Link samples: ${JSON.stringify(pageDebug.linkSamples)}`);
     }
-    log(`Tables found: ${pageDebug.tables.length}`);
+    debug(`Tables found: ${pageDebug.tables.length}`);
     for (const t of pageDebug.tables) {
-      log(`  Table ${t.index}: ${t.rows} rows, first row cells: ${JSON.stringify(t.firstRowCells)}`);
+      debug(`  Table ${t.index}: ${t.rows} rows, first row cells: ${JSON.stringify(t.firstRowCells)}`);
     }
     if (pageDebug.reservationLinks === 0) {
-      log(`Body snippet: ${pageDebug.bodySnippet}`);
+      debug(`Body snippet: ${pageDebug.bodySnippet}`);
     }
   }
 
-  const rooms = await page.evaluate(
-    (startTime, endTime) => {
-      const results = [];
+  // Scrape rooms from the current schedule page
+  let allRooms = await page.evaluate(scrapeCurrentPageRooms, startTime, endTime);
 
-      // Parse the header row to build a time-to-column mapping
-      // Each td in the header has a time label and a colspan
-      const tables = document.querySelectorAll("table");
-      let scheduleTable = null;
-      for (const table of tables) {
-        // The schedule table has the time header row
-        const headerCells = table.querySelectorAll("tr:first-child td, tr:first-child th");
-        for (const cell of headerCells) {
-          if (cell.textContent?.includes("AM") || cell.textContent?.includes("PM")) {
-            scheduleTable = table;
-            break;
+  // Detect other schedule IDs and scrape rooms from each
+  const scheduleIds = await scrapeScheduleIds(page, debug);
+
+  if (scheduleIds.length > 1) {
+    // We have multiple schedules - need to check each one
+    const seenRids = new Set(allRooms.map(r => r.resourceId));
+
+    for (const sid of scheduleIds) {
+      const scheduleUrl = SCHEDULE_URL(date, sid);
+
+      // Skip if this is the same page we're already on
+      if (page.url().includes(`sid=${sid}`)) continue;
+
+      if (debug) debug(`Checking schedule ${sid} for additional rooms...`);
+
+      try {
+        await page.goto(scheduleUrl, { waitUntil: "networkidle2" });
+        await page.waitForSelector('a[href*="reservation.php"]', { timeout: 10000 }).catch(() => {});
+
+        const moreRooms = await page.evaluate(scrapeCurrentPageRooms, startTime, endTime);
+
+        for (const room of moreRooms) {
+          if (!seenRids.has(room.resourceId)) {
+            seenRids.add(room.resourceId);
+            allRooms.push(room);
           }
         }
-        if (scheduleTable) break;
+
+        if (debug) debug(`Schedule ${sid}: found ${moreRooms.length} rooms (${moreRooms.filter(r => !seenRids.has(r.resourceId) || true).length} new)`);
+      } catch (err) {
+        if (debug) debug(`Failed to load schedule ${sid}: ${err.message}`);
       }
+    }
+  } else if (allRooms.length < KNOWN_ROOMS.length) {
+    // No multiple schedule IDs detected, but we're missing rooms.
+    // Try common schedule IDs to find remaining rooms.
+    const seenRids = new Set(allRooms.map(r => r.resourceId));
+    const seenNames = new Set(allRooms.map(r => r.name));
+    const missingRooms = KNOWN_ROOMS.filter(name => !seenNames.has(name));
 
-      if (!scheduleTable) return results;
+    if (missingRooms.length > 0 && debug) {
+      debug(`Missing ${missingRooms.length} rooms: ${missingRooms.join(", ")}. Trying other schedule IDs...`);
+    }
 
-      // Build column index mapping: figure out what column index each time starts at
-      // by walking header cells and tracking colspan
-      const headerRow = scheduleTable.querySelector("tr");
-      const headerCells = headerRow ? headerRow.querySelectorAll("td, th") : [];
-      const timeColumns = []; // array of { time: "HH:MM", colStart, colEnd }
-      let colIdx = 0;
+    if (missingRooms.length > 0) {
+      // Try schedule IDs 1-10 to find missing rooms
+      for (let sid = 1; sid <= 10; sid++) {
+        const scheduleUrl = SCHEDULE_URL(date, sid);
+        if (page.url() === scheduleUrl) continue;
 
-      for (const cell of headerCells) {
-        const colspan = parseInt(cell.getAttribute("colspan") || "1", 10);
-        const text = cell.textContent?.trim() || "";
+        try {
+          await page.goto(scheduleUrl, { waitUntil: "networkidle2" });
+          const hasRooms = await page.evaluate(() =>
+            document.querySelectorAll('a[href*="reservation.php"]').length > 0
+          );
+          if (!hasRooms) continue;
 
-        // Parse time from header like "7:00 AM", "12:00 PM"
-        const timeMatch = text.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-        if (timeMatch) {
-          let hours = parseInt(timeMatch[1], 10);
-          const mins = parseInt(timeMatch[2], 10);
-          const ampm = timeMatch[3].toUpperCase();
-          if (ampm === "PM" && hours !== 12) hours += 12;
-          if (ampm === "AM" && hours === 12) hours = 0;
-          const time24 = `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
-          timeColumns.push({ time: time24, colStart: colIdx, colEnd: colIdx + colspan });
-        }
+          const moreRooms = await page.evaluate(scrapeCurrentPageRooms, startTime, endTime);
+          let foundNew = false;
 
-        colIdx += colspan;
-      }
-
-      if (timeColumns.length === 0) return results;
-
-      // Determine the total number of columns
-      const totalCols = colIdx;
-
-      // Figure out the column range for the requested start/end time
-      // Each column represents a 10-minute slot
-      // Find the first header time <= startTime and last header time >= endTime
-      function timeToMinutes(t) {
-        const [h, m] = t.split(":").map(Number);
-        return h * 60 + m;
-      }
-
-      const startMins = timeToMinutes(startTime);
-      const endMins = timeToMinutes(endTime);
-
-      // Calculate columns per minute based on header
-      // Assume 10-min slots (6 columns per hour)
-      const firstTime = timeColumns[0];
-      const firstMins = timeToMinutes(firstTime.time);
-      const slotsPerMin = 1 / 10; // 1 column = 10 minutes
-      const startCol = firstTime.colStart + Math.round((startMins - firstMins) * slotsPerMin);
-      const endCol = firstTime.colStart + Math.round((endMins - firstMins) * slotsPerMin);
-
-      // Now check each room row
-      const rows = scheduleTable.querySelectorAll("tr");
-      for (let r = 1; r < rows.length; r++) {
-        const row = rows[r];
-        const cells = row.querySelectorAll("td, th");
-
-        // First cell(s) are usually the room name and a "Library Closed" label
-        // Find the room link
-        const roomLink = row.querySelector('a[href*="reservation.php"]');
-        if (!roomLink) continue;
-
-        const name = roomLink.textContent?.trim();
-        if (!name) continue;
-        // Only include 2130 study rooms
-        if (!name.startsWith("2130")) continue;
-
-        const href = roomLink.href;
-        const ridMatch = href.match(/rid=(\d+)/);
-        const rid = ridMatch ? ridMatch[1] : "";
-
-        // Walk the cells tracking column position to check the requested range
-        let cellCol = 0;
-        let allReservable = true;
-        let hasOverlap = false;
-
-        for (const cell of cells) {
-          const colspan = parseInt(cell.getAttribute("colspan") || "1", 10);
-          const cellStart = cellCol;
-          const cellEnd = cellCol + colspan;
-
-          // Check if this cell overlaps with requested time range
-          if (cellEnd > startCol && cellStart < endCol) {
-            hasOverlap = true;
-            const cellClass = (cell.className || "").toLowerCase();
-            // "reservable" = open slot, anything else (reserved, unreservable, restricted, past) = not available
-            if (!cellClass.includes("reservable") || cellClass.includes("unreservable")) {
-              allReservable = false;
-              break;
+          for (const room of moreRooms) {
+            if (!seenRids.has(room.resourceId)) {
+              seenRids.add(room.resourceId);
+              seenNames.add(room.name);
+              allRooms.push(room);
+              foundNew = true;
             }
           }
 
-          cellCol += colspan;
+          if (debug) debug(`Schedule ID ${sid}: found ${moreRooms.length} rooms${foundNew ? " (new rooms added)" : ""}`);
+
+          // Check if we've found all known rooms
+          const stillMissing = KNOWN_ROOMS.filter(name => !seenNames.has(name));
+          if (stillMissing.length === 0) break;
+        } catch (err) {
+          // Schedule ID doesn't exist or errored, skip
+          continue;
         }
-
-        results.push({
-          name,
-          resourceId: rid,
-          href,
-          available: hasOverlap && allReservable,
-        });
       }
+    }
+  }
 
-      return results;
-    },
-    startTime,
-    endTime
-  );
-
-  const available = rooms.filter((r) => r.available);
-  const unavailable = rooms.filter((r) => !r.available);
+  const available = allRooms.filter((r) => r.available);
+  const unavailable = allRooms.filter((r) => !r.available);
 
   if (log) {
-    log(`Found ${rooms.length} rooms total: ${available.length} available, ${unavailable.length} unavailable for ${startTime}-${endTime}`);
+    log(`Found ${allRooms.length} rooms total: ${available.length} available, ${unavailable.length} unavailable for ${startTime}-${endTime}`);
     if (unavailable.length > 0) {
       log(`Unavailable: ${unavailable.map((r) => r.name).join(", ")}`);
     }
@@ -664,17 +775,15 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log) {
   return available;
 }
 
-async function clickAndBook(page, room, startTime, endTime, log) {
-  log(`Attempting to book ${room.name} (rid=${room.resourceId})...`);
+async function clickAndBook(page, room, startTime, endTime, log, debug) {
+  log(`Booking ${room.name}...`);
 
-  // Navigate directly to the reservation page for this room
   const reservationUrl = room.href;
-  log(`Navigating to reservation page: ${reservationUrl}`);
+  debug(`Navigating to reservation page: ${reservationUrl}`);
   await page.goto(reservationUrl, { waitUntil: "networkidle2" });
 
-  log(`Reservation page loaded. URL: ${page.url()}`);
+  debug(`Reservation page loaded. URL: ${page.url()}`);
 
-  // Log the form structure so we know what fields exist
   const formDebug = await page.evaluate(() => {
     const inputs = Array.from(document.querySelectorAll("input, select, textarea"));
     return inputs.slice(0, 20).map((el) => ({
@@ -686,9 +795,8 @@ async function clickAndBook(page, room, startTime, endTime, log) {
       placeholder: el.placeholder,
     }));
   });
-  log(`Form fields: ${JSON.stringify(formDebug)}`);
+  debug(`Form fields: ${JSON.stringify(formDebug)}`);
 
-  // Log buttons
   const formButtons = await page.evaluate(() => {
     const btns = Array.from(document.querySelectorAll("button, input[type='submit']"));
     return btns.map((b) => ({
@@ -699,7 +807,7 @@ async function clickAndBook(page, room, startTime, endTime, log) {
       className: b.className,
     }));
   });
-  log(`Form buttons: ${JSON.stringify(formButtons)}`);
+  debug(`Form buttons: ${JSON.stringify(formButtons)}`);
 
   // Set the reservation title - try multiple selectors
   const titleSet = await page.evaluate(() => {
@@ -743,17 +851,17 @@ async function clickAndBook(page, room, startTime, endTime, log) {
     ).map(el => `${el.tagName}#${el.id}[name=${el.name}]`);
     return `not found. Title-related inputs: ${titleRelated.join(", ") || "none"}`;
   });
-  log(`Reservation title: ${titleSet}`);
+  debug(`Reservation title: ${titleSet}`);
 
   // Set start time via BeginPeriod select dropdown (value format: "HH:MM:00")
   const startValue = `${startTime}:00`;
   await page.select("#BeginPeriod", startValue);
-  log(`Set start time to ${startTime}`);
+  debug(`Set start time to ${startTime}`);
 
   // Set end time via EndPeriod select dropdown
   const endValue = `${endTime}:00`;
   await page.select("#EndPeriod", endValue);
-  log(`Set end time to ${endTime}`);
+  debug(`Set end time to ${endTime}`);
 
   // Fill required custom attribute fields
   // These are labeled fields like "Class Size (required)", "Name (required)", etc.
@@ -805,7 +913,7 @@ async function clickAndBook(page, room, startTime, endTime, log) {
     return filled;
   }, customFields);
 
-  log(`Filled custom fields: ${filledFields.join(", ") || "none found"}`);
+  debug(`Filled custom fields: ${filledFields.join(", ") || "none found"}`);
 
   // Click the "Create" button (type="button", class="button save create")
   log("Submitting reservation...");
@@ -815,7 +923,7 @@ async function clickAndBook(page, room, startTime, endTime, log) {
     // Wait for the response (AJAX-based, not a page navigation)
     await new Promise((r) => setTimeout(r, 5000));
   } else {
-    log("Could not find Create button!");
+    debug("Could not find Create button!");
   }
 
   // Check for error messages first (errors take priority over false success matches)
@@ -850,7 +958,7 @@ async function clickAndBook(page, room, startTime, endTime, log) {
     log("Reservation confirmed!");
     return true;
   } else {
-    log(`Reservation result unclear. Page content: ${result.bodySnippet}`);
+    debug(`Reservation result unclear. Page content: ${result.bodySnippet}`);
     return false;
   }
 }
@@ -875,14 +983,16 @@ async function getReservations(opts, onProgress) {
     console.log(`[reservations] ${msg}`);
     if (onProgress) onProgress(msg);
   };
+  const debug = (msg) => console.log(`[reservations:debug] ${msg}`);
 
   const dashboardUrl = `${BASE_URL}/Web/dashboard.php`;
-  log("Navigating to dashboard...");
+  log("Loading reservations...");
   const { page, browser } = await launchAndAuth(
     dashboardUrl,
     username,
     password,
-    log
+    log,
+    debug
   );
 
   try {
@@ -934,28 +1044,29 @@ async function checkAvailability(opts, onProgress) {
     console.log(`[availability] ${msg}`);
     if (onProgress) onProgress(msg);
   };
+  const debug = (msg) => console.log(`[availability:debug] ${msg}`);
 
   log(`Checking availability for ${date} ${startTime}-${endTime}...`);
   const { page, browser } = await launchAndAuth(
     SCHEDULE_URL(date),
     username,
     password,
-    log
+    log,
+    debug
   );
 
   try {
     if (!page.url().includes("schedule.php")) {
-      log(`Navigating to schedule...`);
+      debug(`Navigating to schedule...`);
       await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
     }
 
-    // Wait for actual room links to appear, not just any table
     log("Waiting for schedule rooms to load...");
     await page.waitForSelector('a[href*="reservation.php"]', {
       timeout: 30000,
     });
 
-    const availableRooms = await scrapeAvailableRooms(page, date, startTime, endTime, log);
+    const availableRooms = await scrapeAvailableRooms(page, date, startTime, endTime, log, debug);
     await browser.close();
 
     return {
