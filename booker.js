@@ -66,7 +66,10 @@ async function launchAndAuth(targetUrl, username, password, log, debug) {
     await page.setCookie(...cookies);
   }
 
-  await page.goto(targetUrl, { waitUntil: "networkidle2" });
+  await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+
+  // Give the page a moment for any client-side redirects (e.g., CAS SSO)
+  await new Promise((r) => setTimeout(r, 2000));
 
   const currentUrl = page.url();
   const needsLogin =
@@ -147,7 +150,7 @@ async function bookRoom(opts, onProgress) {
     // After auth, we may land on dashboard instead of schedule - navigate there
     if (!page.url().includes("schedule.php")) {
       debug(`Landed on ${page.url()} after auth. Navigating to schedule...`);
-      await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
+      await page.goto(SCHEDULE_URL(date), { waitUntil: "domcontentloaded", timeout: 60000 });
     }
 
     debug(`On schedule page. URL: ${page.url()}`);
@@ -696,7 +699,7 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log, debug) 
       if (debug) debug(`Checking schedule ${sid} for additional rooms...`);
 
       try {
-        await page.goto(scheduleUrl, { waitUntil: "networkidle2" });
+        await page.goto(scheduleUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
         await page.waitForSelector('a[href*="reservation.php"]', { timeout: 10000 }).catch(() => {});
 
         const moreRooms = await page.evaluate(scrapeCurrentPageRooms, startTime, endTime);
@@ -731,7 +734,7 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log, debug) 
         if (page.url() === scheduleUrl) continue;
 
         try {
-          await page.goto(scheduleUrl, { waitUntil: "networkidle2" });
+          await page.goto(scheduleUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
           const hasRooms = await page.evaluate(() =>
             document.querySelectorAll('a[href*="reservation.php"]').length > 0
           );
@@ -1058,7 +1061,7 @@ async function checkAvailability(opts, onProgress) {
   try {
     if (!page.url().includes("schedule.php")) {
       debug(`Navigating to schedule...`);
-      await page.goto(SCHEDULE_URL(date), { waitUntil: "networkidle2" });
+      await page.goto(SCHEDULE_URL(date), { waitUntil: "domcontentloaded", timeout: 60000 });
     }
 
     log("Waiting for schedule rooms to load...");
