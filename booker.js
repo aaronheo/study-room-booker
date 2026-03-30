@@ -683,23 +683,19 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log, debug) 
   // Scrape rooms from the current schedule page
   let allRooms = await page.evaluate(scrapeCurrentPageRooms, startTime, endTime);
 
-  // Detect other schedule IDs and scrape rooms from each
+  // Check if the page has other schedule tabs/links with different rooms
   const scheduleIds = await scrapeScheduleIds(page, debug);
 
   if (scheduleIds.length > 1) {
-    // We have multiple schedules - need to check each one
     const seenRids = new Set(allRooms.map(r => r.resourceId));
 
     for (const sid of scheduleIds) {
-      const scheduleUrl = SCHEDULE_URL(date, sid);
-
-      // Skip if this is the same page we're already on
       if (page.url().includes(`sid=${sid}`)) continue;
 
       if (debug) debug(`Checking schedule ${sid} for additional rooms...`);
 
       try {
-        await page.goto(scheduleUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.goto(SCHEDULE_URL(date, sid), { waitUntil: "domcontentloaded", timeout: 30000 });
         await page.waitForSelector('a[href*="reservation.php"]', { timeout: 10000 }).catch(() => {});
 
         const moreRooms = await page.evaluate(scrapeCurrentPageRooms, startTime, endTime);
@@ -710,57 +706,8 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log, debug) 
             allRooms.push(room);
           }
         }
-
-        if (debug) debug(`Schedule ${sid}: found ${moreRooms.length} rooms (${moreRooms.filter(r => !seenRids.has(r.resourceId) || true).length} new)`);
       } catch (err) {
         if (debug) debug(`Failed to load schedule ${sid}: ${err.message}`);
-      }
-    }
-  } else if (allRooms.length < KNOWN_ROOMS.length) {
-    // No multiple schedule IDs detected, but we're missing rooms.
-    // Try common schedule IDs to find remaining rooms.
-    const seenRids = new Set(allRooms.map(r => r.resourceId));
-    const seenNames = new Set(allRooms.map(r => r.name));
-    const missingRooms = KNOWN_ROOMS.filter(name => !seenNames.has(name));
-
-    if (missingRooms.length > 0 && debug) {
-      debug(`Missing ${missingRooms.length} rooms: ${missingRooms.join(", ")}. Trying other schedule IDs...`);
-    }
-
-    if (missingRooms.length > 0) {
-      // Try schedule IDs 1-10 to find missing rooms
-      for (let sid = 1; sid <= 10; sid++) {
-        const scheduleUrl = SCHEDULE_URL(date, sid);
-        if (page.url() === scheduleUrl) continue;
-
-        try {
-          await page.goto(scheduleUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-          const hasRooms = await page.evaluate(() =>
-            document.querySelectorAll('a[href*="reservation.php"]').length > 0
-          );
-          if (!hasRooms) continue;
-
-          const moreRooms = await page.evaluate(scrapeCurrentPageRooms, startTime, endTime);
-          let foundNew = false;
-
-          for (const room of moreRooms) {
-            if (!seenRids.has(room.resourceId)) {
-              seenRids.add(room.resourceId);
-              seenNames.add(room.name);
-              allRooms.push(room);
-              foundNew = true;
-            }
-          }
-
-          if (debug) debug(`Schedule ID ${sid}: found ${moreRooms.length} rooms${foundNew ? " (new rooms added)" : ""}`);
-
-          // Check if we've found all known rooms
-          const stillMissing = KNOWN_ROOMS.filter(name => !seenNames.has(name));
-          if (stillMissing.length === 0) break;
-        } catch (err) {
-          // Schedule ID doesn't exist or errored, skip
-          continue;
-        }
       }
     }
   }
