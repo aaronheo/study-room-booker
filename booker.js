@@ -193,7 +193,7 @@ async function bookRoom(opts, onProgress) {
 
     if (preferredRoom) {
       log(`Preferred room "${room}" is available! Booking...`);
-      const booked = await clickAndBook(page, preferredRoom, startTime, endTime, log, debug);
+      const booked = await clickAndBook(page, preferredRoom, date, startTime, endTime, log, debug);
       await browser.close();
       if (booked) {
         return {
@@ -778,10 +778,15 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log, debug) 
   return available;
 }
 
-async function clickAndBook(page, room, startTime, endTime, log, debug) {
-  log(`Booking ${room.name}...`);
+async function clickAndBook(page, room, date, startTime, endTime, log, debug) {
+  log(`Booking ${room.name} for ${date}...`);
 
-  const reservationUrl = room.href;
+  // Ensure the reservation URL includes the date (rd parameter)
+  let reservationUrl = room.href;
+  if (!reservationUrl.includes("rd=")) {
+    const separator = reservationUrl.includes("?") ? "&" : "?";
+    reservationUrl = `${reservationUrl}${separator}rd=${date}`;
+  }
   debug(`Navigating to reservation page: ${reservationUrl}`);
   await page.goto(reservationUrl, { waitUntil: "networkidle2" });
 
@@ -855,6 +860,31 @@ async function clickAndBook(page, room, startTime, endTime, log, debug) {
     return `not found. Title-related inputs: ${titleRelated.join(", ") || "none"}`;
   });
   debug(`Reservation title: ${titleSet}`);
+
+  // Set the reservation date on the form (Booked Scheduler uses #BeginDate / #EndDate)
+  const dateSet = await page.evaluate((dateStr) => {
+    const results = [];
+    // Try #BeginDate and #EndDate inputs
+    for (const id of ["BeginDate", "EndDate", "beginDate", "endDate", "formattedBeginDate", "formattedEndDate"]) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.value = dateStr;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        results.push(`${id}=${dateStr}`);
+      }
+    }
+    // Also try input[name] variants
+    for (const name of ["beginDate", "endDate", "BeginDate", "EndDate"]) {
+      const el = document.querySelector(`input[name="${name}"]`);
+      if (el && !results.includes(`${name}=${dateStr}`)) {
+        el.value = dateStr;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        results.push(`${name}=${dateStr}`);
+      }
+    }
+    return results.length > 0 ? results.join(", ") : "no date fields found";
+  }, date);
+  debug(`Date fields set: ${dateSet}`);
 
   // Set start time via BeginPeriod select dropdown (value format: "HH:MM:00")
   const startValue = `${startTime}:00`;
