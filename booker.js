@@ -599,7 +599,6 @@ function scrapeCurrentPageRooms(startTime, endTime) {
     let cellCol = 0;
     let allReservable = true;
     let hasOverlap = false;
-    let slotHref = "";
 
     const cells = row.querySelectorAll("td, th");
     for (const cell of cells) {
@@ -614,16 +613,6 @@ function scrapeCurrentPageRooms(startTime, endTime) {
           allReservable = false;
           break;
         }
-        // Capture the reservation URL from a reservable time slot cell
-        // These cells typically have links or data attributes with the date baked in
-        if (!slotHref) {
-          const slotLink = cell.querySelector("a[href*='reservation.php']");
-          if (slotLink) {
-            slotHref = slotLink.href;
-          } else if (cell.getAttribute("data-href")) {
-            slotHref = cell.getAttribute("data-href");
-          }
-        }
       }
 
       cellCol += colspan;
@@ -632,7 +621,6 @@ function scrapeCurrentPageRooms(startTime, endTime) {
     results.push({
       name,
       resourceId: rid,
-      href: slotHref || href,
       available: hasOverlap && allReservable,
     });
   }
@@ -693,12 +681,8 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log, debug) 
 async function clickAndBook(page, room, date, startTime, endTime, log, debug) {
   log(`Booking ${room.name} for ${date}...`);
 
-  // Ensure the reservation URL includes the date (rd parameter)
-  let reservationUrl = room.href;
-  if (!reservationUrl.includes("rd=")) {
-    const separator = reservationUrl.includes("?") ? "&" : "?";
-    reservationUrl = `${reservationUrl}${separator}rd=${date}`;
-  }
+  // Construct the reservation URL with the resource ID and date
+  const reservationUrl = `${BASE_URL}/Web/reservation.php?rid=${room.resourceId}&rd=${date}`;
   debug(`Navigating to reservation page: ${reservationUrl}`);
   await page.goto(reservationUrl, { waitUntil: "networkidle2" });
 
@@ -990,36 +974,9 @@ async function getReservations(opts, onProgress) {
             const endDate = cells[3]?.textContent?.trim();
             const room = cells[4]?.textContent?.trim() || "";
 
-            // Extract reservation reference number from links in the row
-            let referenceNumber = "";
-            const links = row.querySelectorAll("a");
-            for (const link of links) {
-              const href = link.href || "";
-              // Try rn= parameter
-              const rnMatch = href.match(/rn=([A-Za-z0-9]+)/);
-              if (rnMatch) { referenceNumber = rnMatch[1]; break; }
-              // Try referenceNumber= parameter
-              const refMatch = href.match(/referenceNumber=([A-Za-z0-9]+)/);
-              if (refMatch) { referenceNumber = refMatch[1]; break; }
-              // Try reservation.php?rid= (resource id as fallback identifier)
-              const ridMatch = href.match(/rid=(\d+)/);
-              if (ridMatch && href.includes("reservation.php")) {
-                referenceNumber = link.href; // store full URL as fallback
-                break;
-              }
-            }
-            // Also check data attributes on the row and cells
-            if (!referenceNumber) {
-              referenceNumber = row.getAttribute("data-refnum") || row.getAttribute("data-rn") ||
-                row.getAttribute("data-reservation-id") || "";
-            }
-            // Check the title cell link specifically (Booked puts the ref link on the title)
-            if (!referenceNumber && cells[0]) {
-              const titleLink = cells[0].querySelector("a");
-              if (titleLink && titleLink.href) {
-                referenceNumber = titleLink.href;
-              }
-            }
+            // The reservation reference number is the row's id attribute
+            // e.g. <tr id="69c2d818ba1bb414680475" class="reservation">
+            const referenceNumber = row.id || "";
 
             if (title && startDate) {
               results.push({ title, user, startDate, endDate, room, referenceNumber });
