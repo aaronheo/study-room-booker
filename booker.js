@@ -922,15 +922,31 @@ async function getReservations(opts, onProgress) {
             let referenceNumber = "";
             const links = row.querySelectorAll("a");
             for (const link of links) {
-              const rnMatch = link.href.match(/rn=([A-Za-z0-9]+)/);
-              if (rnMatch) {
-                referenceNumber = rnMatch[1];
+              const href = link.href || "";
+              // Try rn= parameter
+              const rnMatch = href.match(/rn=([A-Za-z0-9]+)/);
+              if (rnMatch) { referenceNumber = rnMatch[1]; break; }
+              // Try referenceNumber= parameter
+              const refMatch = href.match(/referenceNumber=([A-Za-z0-9]+)/);
+              if (refMatch) { referenceNumber = refMatch[1]; break; }
+              // Try reservation.php?rid= (resource id as fallback identifier)
+              const ridMatch = href.match(/rid=(\d+)/);
+              if (ridMatch && href.includes("reservation.php")) {
+                referenceNumber = link.href; // store full URL as fallback
                 break;
               }
             }
-            // Also check data attributes
+            // Also check data attributes on the row and cells
             if (!referenceNumber) {
-              referenceNumber = row.getAttribute("data-refnum") || row.getAttribute("data-rn") || "";
+              referenceNumber = row.getAttribute("data-refnum") || row.getAttribute("data-rn") ||
+                row.getAttribute("data-reservation-id") || "";
+            }
+            // Check the title cell link specifically (Booked puts the ref link on the title)
+            if (!referenceNumber && cells[0]) {
+              const titleLink = cells[0].querySelector("a");
+              if (titleLink && titleLink.href) {
+                referenceNumber = titleLink.href;
+              }
             }
 
             if (title && startDate) {
@@ -1011,9 +1027,17 @@ async function deleteReservation(opts, onProgress) {
     throw new Error("No reservation reference number provided.");
   }
 
-  log(`Deleting reservation ${referenceNumber}...`);
+  log(`Deleting reservation...`);
 
-  const reservationUrl = `${BASE_URL}/Web/reservation.php?rn=${referenceNumber}`;
+  // referenceNumber can be an rn code, a full URL, or a rid
+  let reservationUrl;
+  if (referenceNumber.startsWith("http")) {
+    reservationUrl = referenceNumber;
+  } else if (/^\d+$/.test(referenceNumber)) {
+    reservationUrl = `${BASE_URL}/Web/reservation.php?rid=${referenceNumber}`;
+  } else {
+    reservationUrl = `${BASE_URL}/Web/reservation.php?rn=${referenceNumber}`;
+  }
   const { page, browser } = await launchAndAuth(
     reservationUrl,
     username,
