@@ -10,7 +10,7 @@ function getNextFriday() {
   const daysUntilFri = (5 - day + 7) % 7 || 7;
   const fri = new Date(today);
   fri.setDate(today.getDate() + daysUntilFri);
-  return `${fri.getFullYear()}-${fri.getMonth() + 1}-${fri.getDate()}`;
+  return fri.toISOString().split("T")[0]; // YYYY-MM-DD
 }
 
 // In-memory session cookie cache
@@ -737,29 +737,26 @@ async function clickAndBook(page, room, date, startTime, endTime, log, debug) {
   });
   debug(`Reservation title: ${titleSet}`);
 
-  // Set the reservation date on the form (Booked Scheduler uses #BeginDate / #EndDate)
-  const dateSet = await page.evaluate((dateStr) => {
+  // Set the reservation date on the form
+  // Booked Scheduler date inputs typically use MM/DD/YYYY display format
+  const [year, month, day] = date.split("-");
+  const formattedDate = `${month.padStart(2, "0")}/${day.padStart(2, "0")}/${year}`;
+  const dateSet = await page.evaluate((isoDate, displayDate) => {
     const results = [];
-    // Try #BeginDate and #EndDate inputs
-    for (const id of ["BeginDate", "EndDate", "beginDate", "endDate", "formattedBeginDate", "formattedEndDate"]) {
+    const dateIds = ["BeginDate", "EndDate", "beginDate", "endDate", "formattedBeginDate", "formattedEndDate"];
+    for (const id of dateIds) {
       const el = document.getElementById(id);
       if (el) {
-        el.value = dateStr;
+        const currentVal = el.value;
+        // Determine format: if current value looks like MM/DD/YYYY, use display format
+        const newVal = currentVal.includes("/") ? displayDate : isoDate;
+        el.value = newVal;
         el.dispatchEvent(new Event("change", { bubbles: true }));
-        results.push(`${id}=${dateStr}`);
-      }
-    }
-    // Also try input[name] variants
-    for (const name of ["beginDate", "endDate", "BeginDate", "EndDate"]) {
-      const el = document.querySelector(`input[name="${name}"]`);
-      if (el && !results.includes(`${name}=${dateStr}`)) {
-        el.value = dateStr;
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        results.push(`${name}=${dateStr}`);
+        results.push(`${id}: ${currentVal} -> ${newVal}`);
       }
     }
     return results.length > 0 ? results.join(", ") : "no date fields found";
-  }, date);
+  }, date, formattedDate);
   debug(`Date fields set: ${dateSet}`);
 
   // Set start time via BeginPeriod select dropdown (value format: "HH:MM:00")
@@ -909,7 +906,6 @@ async function getReservations(opts, onProgress) {
     // Scrape the "Upcoming Reservations" table
     const reservations = await page.evaluate(() => {
       const results = [];
-      // Find all table rows in the upcoming reservations section
       const tables = document.querySelectorAll("table");
       for (const table of tables) {
         const rows = table.querySelectorAll("tr");
@@ -921,8 +917,24 @@ async function getReservations(opts, onProgress) {
             const startDate = cells[2]?.textContent?.trim();
             const endDate = cells[3]?.textContent?.trim();
             const room = cells[4]?.textContent?.trim() || "";
+
+            // Extract reservation reference number from links in the row
+            let referenceNumber = "";
+            const links = row.querySelectorAll("a");
+            for (const link of links) {
+              const rnMatch = link.href.match(/rn=([A-Za-z0-9]+)/);
+              if (rnMatch) {
+                referenceNumber = rnMatch[1];
+                break;
+              }
+            }
+            // Also check data attributes
+            if (!referenceNumber) {
+              referenceNumber = row.getAttribute("data-refnum") || row.getAttribute("data-rn") || "";
+            }
+
             if (title && startDate) {
-              results.push({ title, user, startDate, endDate, room });
+              results.push({ title, user, startDate, endDate, room, referenceNumber });
             }
           }
         }
@@ -986,4 +998,131 @@ async function checkAvailability(opts, onProgress) {
   }
 }
 
-module.exports = { bookRoom, getReservations, checkAvailability, KNOWN_ROOMS, hasCachedSession: () => getCachedCookies() !== null };
+async function deleteReservation(opts, onProgress) {
+  const { username, password, referenceNumber } = opts;
+
+  const log = (msg) => {
+    console.log(`[delete] ${msg}`);
+    if (onProgress) onProgress(msg);
+  };
+  const debug = (msg) => console.log(`[delete:debug] ${msg}`);
+
+  if (!referenceNumber) {
+    throw new Error("No reservation reference number provided.");
+  }
+
+  log(`Deleting reservation ${referenceNumber}...`);
+
+  const reservationUrl = `${BASE_URL}/Web/reservation.php?rn=${referenceNumber}`;
+  const { page, browser } = await launchAndAuth(
+    reservationUrl,
+    username,
+    password,
+    log,
+    debug
+  );
+
+  try {
+    if (!page.url().includes("reservation.php")) {
+      await page.goto(reservationUrl, { waitUntil: "networkidle2" });
+    }
+
+    debug(`On reservation page. URL: ${page.url()}`);
+
+    // Look for the Delete button
+    const deleteBtn = await page.$("button.save.delete, button.delete, .btn-danger, button[class*='delete']");
+    if (!deleteBtn) {
+      // Try finding by text content
+      const btnByText = await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll("button, a.btn"));
+        for (const btn of btns) {
+          if ((btn.textContent || "").toLowerCase().includes("delete")) {
+            btn.click();
+            return btn.textContent.trim();
+          }
+        }
+        return null;
+      });
+      if (!btnByText) {
+        throw new Error("Could not find Delete button on reservation page.");
+      }
+      debug(`Clicked delete button by text: "${btnByText}"`);
+    } else {
+      await deleteBtn.click();
+      debug("Clicked delete button.");
+    }
+
+    // Wait for confirmation dialog/modal
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // Booked Scheduler shows a confirmation dialog — click the confirm/OK button
+    const confirmed = await page.evaluate(() => {
+      // Check for modal/dialog confirm buttons
+      const confirmBtns = Array.from(document.querySelectorAll(
+        ".modal button, .dialog button, #dialogSave, button.save, #btnConfirmDelete, button[id*='confirm'], button[id*='ok']"
+      ));
+      for (const btn of confirmBtns) {
+        const text = (btn.textContent || "").toLowerCase();
+        if (text.includes("delete") || text.includes("ok") || text.includes("yes") || text.includes("confirm")) {
+          btn.click();
+          return text.trim();
+        }
+      }
+      // Also check for any visible primary button in a dialog
+      const primary = document.querySelector(".modal-footer .btn-primary, .modal-footer button");
+      if (primary) {
+        primary.click();
+        return primary.textContent?.trim() || "primary";
+      }
+      return null;
+    });
+
+    if (confirmed) {
+      debug(`Confirmed deletion: "${confirmed}"`);
+    } else {
+      debug("No confirmation dialog found, deletion may have proceeded directly.");
+    }
+
+    // Wait for response
+    await page.waitForResponse(
+      (res) => res.url().includes("reservation.php") || res.url().includes("ajax") || res.url().includes("delete"),
+      { timeout: 10000 }
+    ).catch(() => {});
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // Check result
+    const result = await page.evaluate(() => {
+      const body = document.body?.innerText || "";
+      const errors = [];
+      document.querySelectorAll(".error, .alert-danger, .validation-error").forEach(el => {
+        const text = el.textContent?.trim();
+        if (text) errors.push(text);
+      });
+      const hasSuccess = errors.length === 0 && (
+        body.includes("deleted") || body.includes("removed") || body.includes("successfully")
+      );
+      return { success: hasSuccess, errors, bodySnippet: body.substring(0, 500) };
+    });
+
+    await browser.close();
+
+    if (result.errors.length > 0) {
+      return { success: false, message: `Delete failed: ${result.errors.join("; ")}` };
+    }
+    if (result.success) {
+      log("Reservation deleted successfully!");
+      return { success: true, message: "Reservation deleted successfully." };
+    }
+
+    // If we can't confirm success but no errors, assume it worked
+    // (the page might have navigated away from the reservation)
+    log("Reservation deletion submitted.");
+    return { success: true, message: "Reservation deletion submitted." };
+  } catch (err) {
+    log(`Error: ${err.message}`);
+    await browser.close().catch(() => {});
+    throw err;
+  }
+}
+
+module.exports = { bookRoom, getReservations, deleteReservation, checkAvailability, KNOWN_ROOMS, hasCachedSession: () => getCachedCookies() !== null };

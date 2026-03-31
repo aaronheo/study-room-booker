@@ -352,14 +352,9 @@
       statusLog.scrollTop = statusLog.scrollHeight;
     }
 
-    function formatDate(dateStr) {
-      const d = new Date(dateStr + 'T00:00:00');
-      return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-    }
-
     function getBookingParams() {
       return {
-        date: formatDate(document.getElementById('date').value),
+        date: document.getElementById('date').value,
         startTime: document.getElementById('startTime').value,
         endTime: document.getElementById('endTime').value,
       };
@@ -605,13 +600,17 @@
               reservationsListDiv.innerHTML = '<p class="no-reservations">No upcoming reservations.</p>';
             } else {
               let html = `<table class="reservations-table">
-                <thead><tr><th>Title</th><th>Start</th><th>End</th><th>Room</th></tr></thead><tbody>`;
+                <thead><tr><th>Title</th><th>Start</th><th>End</th><th>Room</th><th></th></tr></thead><tbody>`;
               msg.reservations.forEach(r => {
+                const deleteBtn = r.referenceNumber
+                  ? `<button class="delete-res-btn" data-rn="${escapeHtml(r.referenceNumber)}" style="background:#cc0000;color:#fff;border:none;border-radius:6px;padding:0.3rem 0.6rem;font-size:0.75rem;cursor:pointer;">Delete</button>`
+                  : '';
                 html += `<tr>
                   <td>${escapeHtml(r.title)}</td>
                   <td>${escapeHtml(r.startDate)}</td>
                   <td>${escapeHtml(r.endDate)}</td>
                   <td>${escapeHtml(r.room)}</td>
+                  <td>${deleteBtn}</td>
                 </tr>`;
               });
               html += '</tbody></table>';
@@ -631,6 +630,82 @@
         loadReservationsBtn.disabled = false;
       }
     }
+
+    async function deleteReservation(referenceNumber, btn) {
+      if (!confirm('Are you sure you want to delete this reservation?')) return;
+
+      btn.disabled = true;
+      btn.textContent = 'Deleting...';
+      reservationsStatus.style.display = 'block';
+      reservationsLog.innerHTML = '';
+
+      try {
+        const res = await fetch('/api/delete-reservation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ referenceNumber }),
+        });
+        const data = await res.json();
+
+        if (data.error) {
+          reservationsLog.innerHTML = `<div class="msg error">${escapeHtml(data.error)}</div>`;
+          btn.disabled = false;
+          btn.textContent = 'Delete';
+          return;
+        }
+
+        const evtSource = new EventSource(`/api/status/${data.jobId}`);
+        evtSource.onmessage = (e) => {
+          const msg = JSON.parse(e.data);
+          if (msg.status === 'progress') {
+            const div = document.createElement('div');
+            div.className = 'msg info';
+            div.textContent = msg.message;
+            reservationsLog.appendChild(div);
+          } else if (msg.status === 'done') {
+            evtSource.close();
+            if (msg.success) {
+              reservationsLog.innerHTML = `<div class="msg success">${escapeHtml(msg.message)}</div>`;
+              // Remove the row from the table
+              const row = btn.closest('tr');
+              if (row) row.remove();
+              // If table is now empty, show "no reservations"
+              const tbody = reservationsListDiv.querySelector('tbody');
+              if (tbody && tbody.children.length === 0) {
+                reservationsListDiv.innerHTML = '<p class="no-reservations">No upcoming reservations.</p>';
+              }
+            } else {
+              reservationsLog.innerHTML = `<div class="msg error">${escapeHtml(msg.message)}</div>`;
+              btn.disabled = false;
+              btn.textContent = 'Delete';
+            }
+          } else if (msg.status === 'error') {
+            evtSource.close();
+            reservationsLog.innerHTML = `<div class="msg error">${escapeHtml(msg.message)}</div>`;
+            btn.disabled = false;
+            btn.textContent = 'Delete';
+          }
+        };
+        evtSource.onerror = () => {
+          evtSource.close();
+          reservationsLog.innerHTML = '<div class="msg error">Connection lost.</div>';
+          btn.disabled = false;
+          btn.textContent = 'Delete';
+        };
+      } catch (err) {
+        reservationsLog.innerHTML = `<div class="msg error">Failed: ${escapeHtml(err.message)}</div>`;
+        btn.disabled = false;
+        btn.textContent = 'Delete';
+      }
+    }
+
+    // Delegate click events for delete buttons
+    reservationsListDiv.addEventListener('click', (e) => {
+      const btn = e.target.closest('.delete-res-btn');
+      if (btn) {
+        deleteReservation(btn.dataset.rn, btn);
+      }
+    });
 
     loadReservationsBtn.addEventListener('click', fetchReservations);
 

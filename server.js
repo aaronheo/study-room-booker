@@ -1,6 +1,6 @@
 const express = require("express");
 const path = require("path");
-const { bookRoom, getReservations, checkAvailability, hasCachedSession } = require("./booker");
+const { bookRoom, getReservations, deleteReservation, checkAvailability, hasCachedSession } = require("./booker");
 
 const app = express();
 app.use(express.json());
@@ -103,6 +103,34 @@ app.post("/api/availability", async (req, res) => {
   try {
     const result = await checkAvailability(
       { username, password, date, startTime, endTime },
+      (msg) => sendStatus(jobId, { status: "progress", message: msg })
+    );
+    sendStatus(jobId, { status: "done", ...result });
+  } catch (err) {
+    sendStatus(jobId, { status: "error", message: err.message });
+  }
+});
+
+app.post("/api/delete-reservation", async (req, res) => {
+  const { referenceNumber } = req.body;
+
+  if (!referenceNumber) {
+    return res.status(400).json({ error: "Missing referenceNumber." });
+  }
+
+  const username = process.env.UTAH_UID;
+  const password = process.env.PASSWORD;
+
+  if (!username || !password) {
+    return res.status(500).json({ error: "UTAH_UID and PASSWORD environment variables are not set" });
+  }
+
+  const jobId = Date.now().toString(36) + "d";
+  res.json({ jobId });
+
+  try {
+    const result = await deleteReservation(
+      { username, password, referenceNumber },
       (msg) => sendStatus(jobId, { status: "progress", message: msg })
     );
     sendStatus(jobId, { status: "done", ...result });
