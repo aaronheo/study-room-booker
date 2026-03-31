@@ -952,6 +952,29 @@ async function getReservations(opts, onProgress) {
 
     log("Dashboard loaded. Scraping reservations...");
 
+    // Debug: dump the raw dashboard HTML to understand the structure
+    const dashboardDebug = await page.evaluate(() => {
+      const tables = document.querySelectorAll("table");
+      const info = [];
+      for (const table of tables) {
+        const rows = table.querySelectorAll("tr");
+        const sampleRows = Array.from(rows).slice(0, 3).map(r => r.innerHTML.substring(0, 500));
+        info.push({ rowCount: rows.length, sampleRows });
+      }
+      // Also look for non-table reservation elements
+      const reservationEls = document.querySelectorAll("[class*='reservation'], [class*='upcoming'], [id*='reservation'], [id*='upcoming']");
+      const reservationInfo = Array.from(reservationEls).slice(0, 3).map(el => ({
+        tag: el.tagName, id: el.id, className: el.className,
+        html: el.innerHTML.substring(0, 300)
+      }));
+      // Look for ALL links on the page
+      const allLinks = Array.from(document.querySelectorAll("a")).slice(0, 20).map(a => ({
+        text: a.textContent?.trim().substring(0, 50), href: a.href
+      }));
+      return { tables: info, reservationEls: reservationInfo, links: allLinks };
+    });
+    debug(`Dashboard structure: ${JSON.stringify(dashboardDebug)}`);
+
     // Scrape the "Upcoming Reservations" table
     const reservations = await page.evaluate(() => {
       const results = [];
