@@ -599,6 +599,7 @@ function scrapeCurrentPageRooms(startTime, endTime) {
     let cellCol = 0;
     let allReservable = true;
     let hasOverlap = false;
+    let slotHref = "";
 
     const cells = row.querySelectorAll("td, th");
     for (const cell of cells) {
@@ -613,6 +614,16 @@ function scrapeCurrentPageRooms(startTime, endTime) {
           allReservable = false;
           break;
         }
+        // Capture the reservation URL from a reservable time slot cell
+        // These cells typically have links or data attributes with the date baked in
+        if (!slotHref) {
+          const slotLink = cell.querySelector("a[href*='reservation.php']");
+          if (slotLink) {
+            slotHref = slotLink.href;
+          } else if (cell.getAttribute("data-href")) {
+            slotHref = cell.getAttribute("data-href");
+          }
+        }
       }
 
       cellCol += colspan;
@@ -621,7 +632,7 @@ function scrapeCurrentPageRooms(startTime, endTime) {
     results.push({
       name,
       resourceId: rid,
-      href,
+      href: slotHref || href,
       available: hasOverlap && allReservable,
     });
   }
@@ -738,26 +749,64 @@ async function clickAndBook(page, room, date, startTime, endTime, log, debug) {
   debug(`Reservation title: ${titleSet}`);
 
   // Set the reservation date on the form
-  // Booked Scheduler date inputs typically use MM/DD/YYYY display format
   const [year, month, day] = date.split("-");
-  const formattedDate = `${month.padStart(2, "0")}/${day.padStart(2, "0")}/${year}`;
-  const dateSet = await page.evaluate((isoDate, displayDate) => {
-    const results = [];
-    const dateIds = ["BeginDate", "EndDate", "beginDate", "endDate", "formattedBeginDate", "formattedEndDate"];
-    for (const id of dateIds) {
-      const el = document.getElementById(id);
-      if (el) {
-        const currentVal = el.value;
-        // Determine format: if current value looks like MM/DD/YYYY, use display format
-        const newVal = currentVal.includes("/") ? displayDate : isoDate;
-        el.value = newVal;
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        results.push(`${id}: ${currentVal} -> ${newVal}`);
-      }
+  const dateFormats = {
+    iso: date, // 2026-04-10
+    slashed: `${month.padStart(2, "0")}/${day.padStart(2, "0")}/${year}`, // 04/10/2026
+    unpadded: `${parseInt(month)}/${parseInt(day)}/${year}`, // 4/10/2026
+  };
+  const dateResult = await page.evaluate((formats) => {
+    // First, discover all date-related inputs on the form
+    const allInputs = Array.from(document.querySelectorAll("input"));
+    const dateInputs = allInputs.filter(el => {
+      const id = (el.id || "").toLowerCase();
+      const name = (el.name || "").toLowerCase();
+      const type = (el.type || "").toLowerCase();
+      return type === "date" || id.includes("date") || name.includes("date");
+    });
+
+    const report = { found: [], set: [], allDateInputs: [] };
+
+    // Log all date inputs for debugging
+    for (const el of dateInputs) {
+      report.allDateInputs.push({
+        id: el.id, name: el.name, type: el.type, value: el.value,
+        className: el.className, readOnly: el.readOnly
+      });
     }
-    return results.length > 0 ? results.join(", ") : "no date fields found";
-  }, date, formattedDate);
-  debug(`Date fields set: ${dateSet}`);
+
+    // Set date on each date input we find
+    for (const el of dateInputs) {
+      const currentVal = el.value;
+      let newVal;
+      // Match the existing format
+      if (currentVal.includes("/")) {
+        // Could be M/D/YYYY or MM/DD/YYYY — check padding
+        const parts = currentVal.split("/");
+        if (parts[0] && parts[0].length === 1) {
+          newVal = formats.unpadded;
+        } else {
+          newVal = formats.slashed;
+        }
+      } else if (currentVal.includes("-")) {
+        newVal = formats.iso;
+      } else {
+        // Try all formats
+        newVal = formats.slashed;
+      }
+
+      el.value = newVal;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      // Trigger blur to ensure any date picker updates
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+      report.set.push(`${el.id || el.name}: "${currentVal}" -> "${newVal}"`);
+    }
+
+    return report;
+  }, dateFormats);
+  log(`Date fields: ${dateResult.set.length > 0 ? dateResult.set.join(", ") : "none found"}`);
+  debug(`All date inputs on form: ${JSON.stringify(dateResult.allDateInputs)}`);
 
   // Set start time via BeginPeriod select dropdown (value format: "HH:MM:00")
   const startValue = `${startTime}:00`;
