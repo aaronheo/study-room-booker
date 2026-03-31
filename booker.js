@@ -759,49 +759,30 @@ async function clickAndBook(page, room, date, startTime, endTime, log, debug) {
   const dateResult = await page.evaluate((formats) => {
     // First, discover all date-related inputs on the form
     const allInputs = Array.from(document.querySelectorAll("input"));
-    const dateInputs = allInputs.filter(el => {
-      const id = (el.id || "").toLowerCase();
-      const name = (el.name || "").toLowerCase();
-      const type = (el.type || "").toLowerCase();
-      return type === "date" || id.includes("date") || name.includes("date");
-    });
+    // Only set the known Booked Scheduler date fields — don't touch other fields
+    const knownDateIds = ["BeginDate", "EndDate", "formattedBeginDate", "formattedEndDate"];
+    const report = { set: [] };
 
-    const report = { found: [], set: [], allDateInputs: [] };
+    for (const id of knownDateIds) {
+      const el = document.getElementById(id);
+      if (!el) continue;
 
-    // Log all date inputs for debugging
-    for (const el of dateInputs) {
-      report.allDateInputs.push({
-        id: el.id, name: el.name, type: el.type, value: el.value,
-        className: el.className, readOnly: el.readOnly
-      });
-    }
-
-    // Set date on each date input we find
-    for (const el of dateInputs) {
       const currentVal = el.value;
       let newVal;
-      // Match the existing format
       if (currentVal.includes("/")) {
-        // Could be M/D/YYYY or MM/DD/YYYY — check padding
         const parts = currentVal.split("/");
-        if (parts[0] && parts[0].length === 1) {
-          newVal = formats.unpadded;
-        } else {
-          newVal = formats.slashed;
-        }
+        newVal = (parts[0] && parts[0].length === 1) ? formats.unpadded : formats.slashed;
       } else if (currentVal.includes("-")) {
         newVal = formats.iso;
       } else {
-        // Try all formats
         newVal = formats.slashed;
       }
 
       el.value = newVal;
       el.dispatchEvent(new Event("change", { bubbles: true }));
       el.dispatchEvent(new Event("input", { bubbles: true }));
-      // Trigger blur to ensure any date picker updates
       el.dispatchEvent(new Event("blur", { bubbles: true }));
-      report.set.push(`${el.id || el.name}: "${currentVal}" -> "${newVal}"`);
+      report.set.push(`${id}: "${currentVal}" -> "${newVal}"`);
     }
 
     return report;
