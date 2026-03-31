@@ -681,12 +681,29 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log, debug) 
 async function clickAndBook(page, room, date, startTime, endTime, log, debug) {
   log(`Booking ${room.name} for ${date}...`);
 
-  // Construct the reservation URL with the resource ID and date
-  const reservationUrl = `${BASE_URL}/Web/reservation.php?rid=${room.resourceId}&rd=${date}`;
+  // Construct the reservation URL with the resource ID, schedule ID, and date
+  // Booked Scheduler needs rid (resource), sid (schedule), and rd (date)
+  const sid = new URL(page.url()).searchParams.get("sid") || "1";
+  const reservationUrl = `${BASE_URL}/Web/reservation.php?rid=${room.resourceId}&sid=${sid}&rd=${date}`;
   debug(`Navigating to reservation page: ${reservationUrl}`);
   await page.goto(reservationUrl, { waitUntil: "networkidle2" });
 
   debug(`Reservation page loaded. URL: ${page.url()}`);
+
+  // Wait for the reservation form to fully load
+  try {
+    await page.waitForSelector("#reservationTitle, #BeginPeriod, .reservation-form", { timeout: 10000 });
+  } catch {
+    // Form didn't load — log page content for debugging
+    const pageContent = await page.evaluate(() => ({
+      url: location.href,
+      title: document.title,
+      bodySnippet: document.body?.innerText?.substring(0, 500) || "",
+      inputCount: document.querySelectorAll("input, select").length,
+    }));
+    debug(`Form not found. Page: ${JSON.stringify(pageContent)}`);
+    throw new Error(`Reservation form did not load. The page may have redirected or the date format is not recognized. URL: ${pageContent.url}`);
+  }
 
   // Set the reservation title - try multiple selectors
   const titleSet = await page.evaluate(() => {
