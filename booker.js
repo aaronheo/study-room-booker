@@ -68,8 +68,10 @@ async function launchAndAuth(targetUrl, username, password, log, debug) {
 
   await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-  // Give the page a moment for any client-side redirects (e.g., CAS SSO)
-  await new Promise((r) => setTimeout(r, 2000));
+  // Without cached cookies, wait briefly for possible CAS redirect
+  if (!cookies) {
+    await new Promise((r) => setTimeout(r, 2000));
+  }
 
   const currentUrl = page.url();
   const needsLogin =
@@ -124,7 +126,6 @@ async function bookRoom(opts, onProgress) {
   const {
     username,
     password,
-    cookie,
     date = getNextFriday(),
     startTime = "11:00",
     endTime = "14:00",
@@ -221,7 +222,7 @@ async function bookRoom(opts, onProgress) {
     };
   } catch (err) {
     log(`Error: ${err.message}`);
-    // Don't close browser on error so user can debug
+    await browser.close().catch(() => {});
     throw err;
   }
 }
@@ -484,35 +485,26 @@ async function handleCASLogin(page, username, password, log, debug) {
 }
 
 async function scrapeScheduleIds(page, debug) {
-  // Detect all available schedule IDs from the page (dropdown, links, etc.)
+  // Detect all available schedule IDs from the page
   const scheduleIds = await page.evaluate(() => {
     const ids = new Set();
 
-    // Check for schedule selector dropdown (common in Booked Scheduler)
-    const selects = document.querySelectorAll('select');
-    for (const sel of selects) {
-      for (const opt of sel.options) {
-        // Schedule options typically have numeric values
+    // Check for schedule selector dropdown (Booked Scheduler uses #schedules or similar)
+    const scheduleSel = document.querySelector('select#schedules, select[name*="schedule"], select.schedule-select');
+    if (scheduleSel) {
+      for (const opt of scheduleSel.options) {
         if (opt.value && /^\d+$/.test(opt.value)) {
           ids.add(opt.value);
         }
       }
     }
 
-    // Check for schedule links/tabs (e.g., <a href="schedule.php?sid=123">)
-    const links = document.querySelectorAll('a[href*="schedule.php"]');
+    // Check for schedule links/tabs containing sid=
+    const links = document.querySelectorAll('a[href*="sid="]');
     for (const link of links) {
       const match = link.href.match(/sid=(\d+)/);
       if (match) {
         ids.add(match[1]);
-      }
-    }
-
-    // Check for hidden inputs or data attributes with schedule IDs
-    const hiddenInputs = document.querySelectorAll('input[name*="schedule"], input[name*="sid"]');
-    for (const inp of hiddenInputs) {
-      if (inp.value && /^\d+$/.test(inp.value)) {
-        ids.add(inp.value);
       }
     }
 
@@ -642,44 +634,6 @@ async function scrapeAvailableRooms(page, date, startTime, endTime, log, debug) 
   // has td cells with colspan indicating how many 10-min slots they span.
   // Cell classes indicate status: "reservable", "reserved", "unreservable", etc.
 
-  // Debug: log what's actually on the page
-  const pageDebug = await page.evaluate(() => {
-    const allLinks = Array.from(document.querySelectorAll('a[href*="reservation.php"]'));
-    const linkTexts = allLinks.map(a => ({ text: a.textContent?.trim(), href: a.href }));
-    const tables = document.querySelectorAll("table");
-    const tableInfo = Array.from(tables).map((t, i) => {
-      const firstRow = t.querySelector("tr");
-      const cells = firstRow ? Array.from(firstRow.querySelectorAll("td, th")).slice(0, 5) : [];
-      return {
-        index: i,
-        rows: t.querySelectorAll("tr").length,
-        firstRowCells: cells.map(c => c.textContent?.trim().substring(0, 30)),
-      };
-    });
-    return {
-      url: location.href,
-      title: document.title,
-      reservationLinks: linkTexts.length,
-      linkSamples: linkTexts.slice(0, 5),
-      tables: tableInfo,
-      bodySnippet: document.body?.innerText?.substring(0, 500),
-    };
-  });
-  if (debug) {
-    debug(`Page debug - URL: ${pageDebug.url}, title: ${pageDebug.title}`);
-    debug(`Reservation links found: ${pageDebug.reservationLinks}`);
-    if (pageDebug.linkSamples.length > 0) {
-      debug(`Link samples: ${JSON.stringify(pageDebug.linkSamples)}`);
-    }
-    debug(`Tables found: ${pageDebug.tables.length}`);
-    for (const t of pageDebug.tables) {
-      debug(`  Table ${t.index}: ${t.rows} rows, first row cells: ${JSON.stringify(t.firstRowCells)}`);
-    }
-    if (pageDebug.reservationLinks === 0) {
-      debug(`Body snippet: ${pageDebug.bodySnippet}`);
-    }
-  }
-
   // Scrape rooms from the current schedule page
   let allRooms = await page.evaluate(scrapeCurrentPageRooms, startTime, endTime);
 
@@ -738,31 +692,6 @@ async function clickAndBook(page, room, date, startTime, endTime, log, debug) {
   await page.goto(reservationUrl, { waitUntil: "networkidle2" });
 
   debug(`Reservation page loaded. URL: ${page.url()}`);
-
-  const formDebug = await page.evaluate(() => {
-    const inputs = Array.from(document.querySelectorAll("input, select, textarea"));
-    return inputs.slice(0, 20).map((el) => ({
-      tag: el.tagName,
-      type: el.type,
-      name: el.name,
-      id: el.id,
-      value: el.value,
-      placeholder: el.placeholder,
-    }));
-  });
-  debug(`Form fields: ${JSON.stringify(formDebug)}`);
-
-  const formButtons = await page.evaluate(() => {
-    const btns = Array.from(document.querySelectorAll("button, input[type='submit']"));
-    return btns.map((b) => ({
-      text: b.textContent?.trim(),
-      type: b.type,
-      name: b.name,
-      id: b.id,
-      className: b.className,
-    }));
-  });
-  debug(`Form buttons: ${JSON.stringify(formButtons)}`);
 
   // Set the reservation title - try multiple selectors
   const titleSet = await page.evaluate(() => {
@@ -899,9 +828,16 @@ async function clickAndBook(page, room, date, startTime, endTime, log, debug) {
   log("Submitting reservation...");
   const createBtn = await page.$("button.save.create");
   if (createBtn) {
-    await createBtn.evaluate((btn) => btn.click());
-    // Wait for the response (AJAX-based, not a page navigation)
-    await new Promise((r) => setTimeout(r, 5000));
+    // Wait for the AJAX response after clicking
+    await Promise.all([
+      page.waitForResponse(
+        (res) => res.url().includes("reservation.php") || res.url().includes("ajax"),
+        { timeout: 15000 }
+      ).catch(() => {}),
+      createBtn.evaluate((btn) => btn.click()),
+    ]);
+    // Brief pause for DOM to update with response
+    await new Promise((r) => setTimeout(r, 1000));
   } else {
     debug("Could not find Create button!");
   }
@@ -941,19 +877,6 @@ async function clickAndBook(page, room, date, startTime, endTime, log, debug) {
     debug(`Reservation result unclear. Page content: ${result.bodySnippet}`);
     return false;
   }
-}
-
-function parseCookieString(cookieStr, baseUrl) {
-  const domain = new URL(baseUrl).hostname;
-  return cookieStr.split(";").map((pair) => {
-    const [name, ...rest] = pair.trim().split("=");
-    return {
-      name: name.trim(),
-      value: rest.join("=").trim(),
-      domain,
-      path: "/",
-    };
-  });
 }
 
 async function getReservations(opts, onProgress) {

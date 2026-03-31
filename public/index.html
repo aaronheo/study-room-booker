@@ -332,6 +332,12 @@
       });
     });
 
+    function escapeHtml(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
     const checkBtn = document.getElementById('checkBtn');
     const statusDiv = document.getElementById('status');
     const statusLog = document.getElementById('statusLog');
@@ -445,10 +451,9 @@
         };
       } catch (err) {
         addLog('Request failed: ' + err.message, 'error');
+        checkBtn.disabled = false;
+        checkBtn.textContent = 'Check Availability';
       }
-
-      checkBtn.disabled = false;
-      checkBtn.textContent = 'Check Availability';
     }
 
     // Step 2: Book a specific room
@@ -587,7 +592,10 @@
           const msg = JSON.parse(e.data);
 
           if (msg.status === 'progress') {
-            reservationsLog.innerHTML += `<div class="msg info">${msg.message}</div>`;
+            const div = document.createElement('div');
+            div.className = 'msg info';
+            div.textContent = msg.message;
+            reservationsLog.appendChild(div);
             reservationsLog.scrollTop = reservationsLog.scrollHeight;
           } else if (msg.status === 'done') {
             evtSource.close();
@@ -600,10 +608,10 @@
                 <thead><tr><th>Title</th><th>Start</th><th>End</th><th>Room</th></tr></thead><tbody>`;
               msg.reservations.forEach(r => {
                 html += `<tr>
-                  <td>${r.title}</td>
-                  <td>${r.startDate}</td>
-                  <td>${r.endDate}</td>
-                  <td>${r.room}</td>
+                  <td>${escapeHtml(r.title)}</td>
+                  <td>${escapeHtml(r.startDate)}</td>
+                  <td>${escapeHtml(r.endDate)}</td>
+                  <td>${escapeHtml(r.room)}</td>
                 </tr>`;
               });
               html += '</tbody></table>';

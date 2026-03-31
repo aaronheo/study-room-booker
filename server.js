@@ -8,12 +8,22 @@ app.use(express.static(path.join(__dirname, "public")));
 
 // SSE connections for live status updates
 const clients = new Map();
+const pendingMessages = new Map();
 
 app.get("/api/status/:id", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
+
+  // Flush any messages that were buffered before the client connected
+  const buffered = pendingMessages.get(req.params.id);
+  if (buffered) {
+    for (const msg of buffered) {
+      res.write(`data: ${JSON.stringify(msg)}\n\n`);
+    }
+    pendingMessages.delete(req.params.id);
+  }
 
   clients.set(req.params.id, res);
   req.on("close", () => clients.delete(req.params.id));
@@ -23,6 +33,10 @@ function sendStatus(id, data) {
   const client = clients.get(id);
   if (client) {
     client.write(`data: ${JSON.stringify(data)}\n\n`);
+  } else {
+    // Client hasn't connected yet — buffer the message
+    if (!pendingMessages.has(id)) pendingMessages.set(id, []);
+    pendingMessages.get(id).push(data);
   }
 }
 
