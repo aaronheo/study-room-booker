@@ -1058,17 +1058,10 @@ async function deleteReservation(opts, onProgress) {
 
   log(`Deleting reservation...`);
 
-  // referenceNumber can be an rn code, a full URL, or a rid
-  let reservationUrl;
-  if (referenceNumber.startsWith("http")) {
-    reservationUrl = referenceNumber;
-  } else if (/^\d+$/.test(referenceNumber)) {
-    reservationUrl = `${BASE_URL}/Web/reservation.php?rid=${referenceNumber}`;
-  } else {
-    reservationUrl = `${BASE_URL}/Web/reservation.php?rn=${referenceNumber}`;
-  }
+  // Navigate to dashboard first, then click the reservation row to open it
+  const dashboardUrl = `${BASE_URL}/Web/dashboard.php`;
   const { page, browser } = await launchAndAuth(
-    reservationUrl,
+    dashboardUrl,
     username,
     password,
     log,
@@ -1076,101 +1069,126 @@ async function deleteReservation(opts, onProgress) {
   );
 
   try {
-    if (!page.url().includes("reservation.php")) {
-      await page.goto(reservationUrl, { waitUntil: "networkidle2" });
+    if (!page.url().includes("dashboard.php")) {
+      await page.goto(dashboardUrl, { waitUntil: "networkidle2" });
     }
 
-    debug(`On reservation page. URL: ${page.url()}`);
+    // Click the reservation row (tr with the referenceNumber as its id)
+    const rowFound = await page.evaluate((refNum) => {
+      const row = document.getElementById(refNum);
+      if (row) {
+        row.click();
+        return true;
+      }
+      return false;
+    }, referenceNumber);
 
-    // Look for the Delete button
-    const deleteBtn = await page.$("button.save.delete, button.delete, .btn-danger, button[class*='delete']");
-    if (!deleteBtn) {
-      // Try finding by text content
-      const btnByText = await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll("button, a.btn"));
-        for (const btn of btns) {
-          if ((btn.textContent || "").toLowerCase().includes("delete")) {
+    if (!rowFound) {
+      throw new Error("Could not find reservation on dashboard.");
+    }
+
+    debug("Clicked reservation row. Waiting for reservation detail to load...");
+
+    // Wait for the reservation detail page/dialog to appear
+    // Booked Scheduler may open a dialog/popup or navigate to a new page
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Check if a dialog/popup opened or if we navigated
+    const pageState = await page.evaluate(() => {
+      const body = document.body?.innerHTML || "";
+      const allBtns = Array.from(document.querySelectorAll("button, a.btn, input[type='button']"));
+      const btnInfo = allBtns.map(b => ({
+        text: (b.textContent || "").trim(),
+        id: b.id,
+        className: b.className,
+        visible: b.offsetParent !== null,
+      })).filter(b => b.visible && b.text);
+      // Check for dialogs/modals
+      const dialogs = document.querySelectorAll(".dialog, .modal, [role='dialog'], #dialogBox, #dialog-box, .jqmWindow");
+      return {
+        url: location.href,
+        buttons: btnInfo,
+        hasDialog: dialogs.length > 0,
+        dialogCount: dialogs.length,
+      };
+    });
+
+    debug(`Page state: URL=${pageState.url}, dialog=${pageState.hasDialog}, buttons=${JSON.stringify(pageState.buttons.map(b => b.text))}`);
+
+    // Find and click the Delete button
+    const deleteClicked = await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll("button, a.btn, input[type='button'], input[type='submit']"));
+      for (const btn of btns) {
+        const text = (btn.textContent || btn.value || "").toLowerCase().trim();
+        const cls = (btn.className || "").toLowerCase();
+        const id = (btn.id || "").toLowerCase();
+        if (text.includes("delete") || cls.includes("delete") || id.includes("delete")) {
+          // Make sure it's visible
+          if (btn.offsetParent !== null || btn.style.display !== "none") {
             btn.click();
-            return btn.textContent.trim();
+            return (btn.textContent || btn.value || "").trim();
           }
         }
-        return null;
-      });
-      if (!btnByText) {
-        throw new Error("Could not find Delete button on reservation page.");
       }
-      debug(`Clicked delete button by text: "${btnByText}"`);
-    } else {
-      await deleteBtn.click();
-      debug("Clicked delete button.");
+      return null;
+    });
+
+    if (!deleteClicked) {
+      // Log what's on the page for debugging
+      debug(`Visible buttons: ${JSON.stringify(pageState.buttons)}`);
+      throw new Error("Could not find Delete button on reservation page.");
     }
 
-    // Wait for confirmation dialog/modal
-    await new Promise((r) => setTimeout(r, 1000));
+    log(`Clicked "${deleteClicked}" button...`);
 
-    // Booked Scheduler shows a confirmation dialog — click the confirm/OK button
+    // Wait for confirmation dialog
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // Look for and click the confirmation button in a dialog
     const confirmed = await page.evaluate(() => {
-      // Check for modal/dialog confirm buttons
-      const confirmBtns = Array.from(document.querySelectorAll(
-        ".modal button, .dialog button, #dialogSave, button.save, #btnConfirmDelete, button[id*='confirm'], button[id*='ok']"
-      ));
-      for (const btn of confirmBtns) {
-        const text = (btn.textContent || "").toLowerCase();
-        if (text.includes("delete") || text.includes("ok") || text.includes("yes") || text.includes("confirm")) {
+      const btns = Array.from(document.querySelectorAll("button, a.btn, input[type='button']"));
+      // First pass: look for delete/confirm buttons in a visible dialog
+      for (const btn of btns) {
+        const text = (btn.textContent || btn.value || "").toLowerCase().trim();
+        if (btn.offsetParent !== null && (
+          text.includes("delete") || text.includes("ok") ||
+          text.includes("yes") || text.includes("confirm")
+        )) {
           btn.click();
-          return text.trim();
+          return (btn.textContent || btn.value || "").trim();
         }
-      }
-      // Also check for any visible primary button in a dialog
-      const primary = document.querySelector(".modal-footer .btn-primary, .modal-footer button");
-      if (primary) {
-        primary.click();
-        return primary.textContent?.trim() || "primary";
       }
       return null;
     });
 
     if (confirmed) {
-      debug(`Confirmed deletion: "${confirmed}"`);
-    } else {
-      debug("No confirmation dialog found, deletion may have proceeded directly.");
+      debug(`Confirmed: "${confirmed}"`);
     }
 
-    // Wait for response
+    // Wait for the deletion to process
     await page.waitForResponse(
-      (res) => res.url().includes("reservation.php") || res.url().includes("ajax") || res.url().includes("delete"),
+      (res) => res.url().includes("reservation") || res.url().includes("ajax") || res.url().includes("delete"),
       { timeout: 10000 }
     ).catch(() => {});
     await new Promise((r) => setTimeout(r, 1000));
 
-    // Check result
-    const result = await page.evaluate(() => {
-      const body = document.body?.innerText || "";
-      const errors = [];
-      document.querySelectorAll(".error, .alert-danger, .validation-error").forEach(el => {
-        const text = el.textContent?.trim();
-        if (text) errors.push(text);
-      });
-      const hasSuccess = errors.length === 0 && (
-        body.includes("deleted") || body.includes("removed") || body.includes("successfully")
-      );
-      return { success: hasSuccess, errors, bodySnippet: body.substring(0, 500) };
-    });
+    // Verify: check if the reservation is still on the dashboard
+    if (!page.url().includes("dashboard.php")) {
+      await page.goto(dashboardUrl, { waitUntil: "networkidle2" });
+    }
+
+    const stillExists = await page.evaluate((refNum) => {
+      return document.getElementById(refNum) !== null;
+    }, referenceNumber);
 
     await browser.close();
 
-    if (result.errors.length > 0) {
-      return { success: false, message: `Delete failed: ${result.errors.join("; ")}` };
-    }
-    if (result.success) {
-      log("Reservation deleted successfully!");
-      return { success: true, message: "Reservation deleted successfully." };
+    if (stillExists) {
+      return { success: false, message: "Reservation may not have been deleted. Please try again." };
     }
 
-    // If we can't confirm success but no errors, assume it worked
-    // (the page might have navigated away from the reservation)
-    log("Reservation deletion submitted.");
-    return { success: true, message: "Reservation deletion submitted." };
+    log("Reservation deleted successfully!");
+    return { success: true, message: "Reservation deleted successfully." };
   } catch (err) {
     log(`Error: ${err.message}`);
     await browser.close().catch(() => {});
